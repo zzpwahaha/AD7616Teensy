@@ -75,6 +75,7 @@ const char TERMINATOR = '#';
 
 const short RESET = 9;
 const short CS = 10;      // out
+const short SCLK = 13;    // out, only for initializing clock to be high in initDAC, since we are using mode2 of SPI. Maybe not nessary
 const short CONVST = 15;  // out
 const short BUSY = 14;    // in 
 const short TRIG = 16;    // in
@@ -92,10 +93,18 @@ void debugMode();
 
 void initADC();
 void readADC();
+void dataReady();
 
 
 void initADC()
 {
+  digitalWrite(SCLK, HIGH); //prepare it for the SPI, just to be safe
+
+  digitalWrite(RESET, LOW);
+  delay(1); //keep low for at least 1.2us to set a full reset
+  digitalWrite(RESET, HIGH);
+  delay(100); //settling time minimum 15ms
+
   /*initialize range register for A1(3-0),A2(7-4),B1(3-0),B2(7-4)*/
   SPI.beginTransaction(Rsetting);
   digitalWrite(CS,LOW);
@@ -105,7 +114,7 @@ void initADC()
   for (short i = 0; i < 4; i++)
   {
     digitalWrite(CS,LOW);
-    SPI.transfer16((1<<15)+(rangeRegAddr[i]<<8) + rangeRegValue[i]);
+    SPI.transfer16((1<<15)+(rangeRegAddr[i]<<8) + rangeRegValue[i]); //set sampling range for all 16 channels
     digitalWrite(CS, HIGH);  
   }
   SPI.endTransaction();
@@ -116,11 +125,19 @@ void readADC()
 
 }
 
+void dataReady()
+{
+
+}
+
 void debugMode()
 {
   String rc;
   if (Serial.available()){
     rc = Serial.readStringUntil(TERMINATOR);
+  }
+  else{
+    return;
   }
   if (rc.length() != 0){
     Serial.println(rc.c_str());
@@ -142,10 +159,38 @@ void debugMode()
       Serial.println("full-reset register");
       SPI.beginTransaction(Wsetting);
       digitalWrite(RESET, LOW);
-      delay(100);
+      delay(1);
       digitalWrite(RESET, HIGH);
+      delay(100);
       SPI.endTransaction();  
     }
+    else if (rc.compareTo("readseq") == 0){
+      unsigned short seqtmp[32];
+      SPI.beginTransaction(Rsetting);
+      digitalWrite(CS,LOW);
+      SPI.transfer16((0b01<<14)+(0<<8) + 0x00); 
+      digitalWrite(CS, HIGH); 
+      for (short i = 0; i < 31; i++)
+      {
+        digitalWrite(CS,LOW);
+        seqtmp[i] = SPI.transfer16((0b01<<14) + ((i+1)<<9) + 0x00); 
+        digitalWrite(CS, HIGH); 
+      }
+      digitalWrite(CS,LOW);
+      seqtmp[31] = SPI.transfer16((0b01<<14) + ((31)<<9) + 0x00); 
+      digitalWrite(CS, HIGH); 
+      for (short i = 0; i < 32; i++)
+      {
+
+        Serial.printf("seq %2u:", i);
+        Serial.print(seqtmp[i]>>8,HEX);
+        Serial.println(seqtmp[i] & 0xff,HEX);
+      }
+    }
+    else if (rc.compareTo("trig") == 0){
+      digitalWrite(CONVST,)
+    }
+
     else{
       unsigned short tmp[5];
       SPI.beginTransaction(Rsetting);
@@ -193,10 +238,7 @@ void setup()
   pinMode(TRIG, INPUT);
   digitalWrite(CS,HIGH);
   attachInterrupt(digitalPinToInterrupt(TRIG),readADC,RISING);
-
-  digitalWrite(RESET, LOW);
-  delay(100);
-  digitalWrite(RESET, HIGH);
+  attachInterrupt(digitalPinToInterrupt(BUSY),dataReady, FALLING);
 
   SPI.begin();
   delay(500);
@@ -225,41 +267,18 @@ void setup()
 //main function
 void loop() 
 {
-  // SPI.beginTransaction(Wsetting);
-
-  // digitalWrite(CS,LOW);
-  // SPI.transfer(0b00001100);
-  // digitalWrite(CS, HIGH);
-  // digitalWrite(CS,LOW);
-  // SPI.transfer(0b10111011);
-  // 
-  // SPI.beginTransaction(Rsetting);
-
-  // digitalWrite(CS,LOW);
-  // uint16_t a = SPI.transfer16((0b00001010<<8) + 0xff);
-  // digitalWrite(CS, HIGH);
-  // SPI.endTransaction();
-  // 
-  // Serial.print((0b00001010<<8) + 0xcc,HEX);
-  // Serial.print((0b00001010<<8) + 0xff,HEX);
-  // Serial.print("\t");
-  // Serial.print(a>>8,HEX);
-  // Serial.println(a&0xff,HEX);
-  // 
-  // SPI.transfer16(0b0100110010111011);
-  // digitalWrite(CS, HIGH);
-  // 
-  // delay(500);
-
-
-
   // put your main code here, to run repeatedly:
-  //Check for serial data
   #ifdef AD7616DEBUG
   debugMode();
   #endif
+
+  //Check for serial data
   // if (Serial.available()){
-  //   processData();
+  //   String rc = Serial.readStringUntil(TERMINATOR);
+
+  //   Serial.print(rc);
+  //   Serial.println(", data is still avai");
+  //   // processData();
   // }
   // String rc;
   // if (Serial.available()){
