@@ -70,19 +70,25 @@ const char endendMarker = 'e';  //end marker for the whole frame of data
 
 
 /*******************************************************************************************************************/
+#define AD7616DEBUG
+const char TERMINATOR = '#';
 
+const short RESET = 9;
 const short CS = 10;      // out
 const short CONVST = 15;  // out
 const short BUSY = 14;    // in 
 const short TRIG = 16;    // in
 
-const SPISettings Wsetting(1000000, MSBFIRST, SPI_MODE3);
-const SPISettings Rsetting(1000000, MSBFIRST, SPI_MODE3);
+
+const SPISettings Wsetting(45000000, MSBFIRST, SPI_MODE2);
+const SPISettings Rsetting(45000000, MSBFIRST, SPI_MODE2);
 const short configRegAddr   = 0b0000100;
 const short channRegAddr    = 0b0000110;
 const short rangeRegAddr[]  = {0b0001000, 0b0001010, 0b0001100, 0b0001110}; /*A1,A2,B1,B2*/
 const short rangeRegValue[] = {0x00aa, 0x00bb, 0x00cc, 0x00dd}; // right now the values are for test
 
+
+void debugMode();
 
 void initADC();
 void readADC();
@@ -110,19 +116,87 @@ void readADC()
 
 }
 
+void debugMode()
+{
+  String rc;
+  if (Serial.available()){
+    rc = Serial.readStringUntil(TERMINATOR);
+  }
+  if (rc.length() != 0){
+    Serial.println(rc.c_str());
+    if (rc.compareTo("write") == 0){
+      Serial.println("re-write range register");
+      SPI.beginTransaction(Wsetting);
+      digitalWrite(CS,LOW);
+      SPI.transfer16((1<<15)+(configRegAddr<<8) + 0b01100000); //enable burst and sequence, disable oversampling and CRC
+      digitalWrite(CS, HIGH);  
+      for (short i = 0; i < 4; i++)
+      {
+        digitalWrite(CS, LOW);
+        SPI.transfer16((1<<15)+(rangeRegAddr[i]<<8) + rangeRegValue[i]);
+        digitalWrite(CS, HIGH);  
+      }
+      SPI.endTransaction();
+    }
+    else if (rc.compareTo("reset") == 0){
+      Serial.println("full-reset register");
+      SPI.beginTransaction(Wsetting);
+      digitalWrite(RESET, LOW);
+      delay(100);
+      digitalWrite(RESET, HIGH);
+      SPI.endTransaction();  
+    }
+    else{
+      unsigned short tmp[5];
+      SPI.beginTransaction(Rsetting);
+      digitalWrite(CS,LOW);
+      SPI.transfer16((0<<15)+(configRegAddr<<8) + 0x00); 
+      digitalWrite(CS, HIGH); 
+      digitalWrite(CS,LOW);
+      tmp[0] = SPI.transfer16((0<<15)+(rangeRegAddr[0]<<8) + 0x00); 
+      digitalWrite(CS, HIGH); 
+      digitalWrite(CS,LOW);
+      tmp[1] = SPI.transfer16((0<<15)+(rangeRegAddr[1]<<8) + 0x00); 
+      digitalWrite(CS, HIGH); 
+      digitalWrite(CS,LOW);
+      tmp[2] = SPI.transfer16((0<<15)+(rangeRegAddr[2]<<8) + 0x00); 
+      digitalWrite(CS, HIGH);
+      digitalWrite(CS,LOW);
+      tmp[3] = SPI.transfer16((0<<15)+(rangeRegAddr[3]<<8) + 0x00); 
+      digitalWrite(CS, HIGH);
+      digitalWrite(CS,LOW);
+      tmp[4] = SPI.transfer16((0<<15)+(rangeRegAddr[3]<<8) + 0x00); 
+      digitalWrite(CS, HIGH);
+      SPI.endTransaction(); 
+
+      for (short i = 0; i < 5; i++)
+      {
+        Serial.print(tmp[i]>>8,HEX);
+        Serial.println(tmp[i] & 0xff,HEX);
+      }
+      
+    }
+  }
+  delay(100);
+}
+
 //initialization of hardware
 void setup() 
 {  
   // Initializing USB serial to 12Mbit/sec. Teensy ignores the 9600 baud rate. see https://www.pjrc.com/teensy/td_serial.html
   Serial.begin(9600);
 
-
+  pinMode(RESET, OUTPUT);
   pinMode(CS, OUTPUT);
   pinMode(CONVST, OUTPUT);
   pinMode(BUSY, INPUT);
   pinMode(TRIG, INPUT);
   digitalWrite(CS,HIGH);
   attachInterrupt(digitalPinToInterrupt(TRIG),readADC,RISING);
+
+  digitalWrite(RESET, LOW);
+  delay(100);
+  digitalWrite(RESET, HIGH);
 
   SPI.begin();
   delay(500);
@@ -151,7 +225,7 @@ void setup()
 //main function
 void loop() 
 {
-  SPI.beginTransaction(Wsetting);
+  // SPI.beginTransaction(Wsetting);
 
   // digitalWrite(CS,LOW);
   // SPI.transfer(0b00001100);
@@ -181,9 +255,17 @@ void loop()
 
   // put your main code here, to run repeatedly:
   //Check for serial data
+  #ifdef AD7616DEBUG
+  debugMode();
+  #endif
   // if (Serial.available()){
   //   processData();
   // }
+  // String rc;
+  // if (Serial.available()){
+  //   rc = Serial.readStringUntil(TERMINATOR);
+  // }
+  // strtol
   // if (rampflg0%2 && rampflg0/2 < rampCounter0){
   //   if (stepCount0 == 0){
   //     dt0 = ramp0[rampflg0/2][5];
