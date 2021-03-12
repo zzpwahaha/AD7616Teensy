@@ -25,6 +25,7 @@
 #include <SPI.h>
 #include <EEPROMex.h>
 #include <stdio.h>
+#include <NativeEthernet.h>
 
 //Function declaration
 void pfdInit();
@@ -81,13 +82,18 @@ const short BUSY = 14;    // in
 const short TRIG = 16;    // in
 
 
-const SPISettings Wsetting(45000000, MSBFIRST, SPI_MODE2);
-const SPISettings Rsetting(45000000, MSBFIRST, SPI_MODE2);
+const SPISettings Wsetting(45000000, MSBFIRST, SPI_MODE3);
+const SPISettings Rsetting(45000000, MSBFIRST, SPI_MODE3);
 const short configRegAddr   = 0b0000100;
 const short channRegAddr    = 0b0000110;
 const short rangeRegAddr[]  = {0b0001000, 0b0001010, 0b0001100, 0b0001110}; /*A1,A2,B1,B2*/
-const short rangeRegValue[] = {0x00aa, 0x00bb, 0x00cc, 0x00dd}; // right now the values are for test
+const short rangeRegValue[] = {0x0000, 0x0000, 0x0000, 0x0000};//{0x00aa, 0x00bb, 0x00cc, 0x00dd}; // right now the values are for test
 
+elapsedMicros timer;
+/******************ETHERNET CONNECTION****************************/
+byte mac[] = {0x04,0xe9,0xe5,0x0e,0x0c,0xe0};
+IPAddress ip(10,10,0,10);
+EthernetServer server(80);
 
 void debugMode();
 
@@ -95,6 +101,8 @@ void initADC();
 void readADC();
 void dataReady();
 
+void initTCP();
+void listenForEthernetClients();
 
 void initADC()
 {
@@ -127,8 +135,85 @@ void readADC()
 
 void dataReady()
 {
+  Serial.printf("Total time: %u \r\n", static_cast<unsigned long>(timer) );
+  SPI.beginTransaction(Rsetting);
+  for (short i = 0; i < 16; i++)
+  {
+    digitalWrite(CS,LOW);
+    signed short data = SPI.transfer16(0);
+    Serial.println(data);
+  }
+  
 
 }
+
+void initTCP()
+{
+  Ethernet.begin(mac,ip);
+  Serial.println("Try to initialize TCP \r\n");
+  // Check for Ethernet hardware present
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
+    return;
+  }
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("Ethernet cable is not connected.");
+    return;
+  }
+  Serial.println("Success start \r\n");
+  // start listening for clients
+  server.begin();
+
+}
+
+void listenForEthernetClients() 
+{
+  // listen for incoming clients
+  EthernetClient client = server.available();
+  Serial.println("Looking for client");
+  if (client) {
+    Serial.println("Got a client");
+    // an http request ends with a blank line
+    boolean currentLineIsBlank = true;
+    while (client.connected()) {
+      if (client.available() > 0) {
+        char c = client.read();
+        // if you've gotten to the end of the line (received a newline
+        // character) and the line is blank, the http request has ended,
+        // so you can send a reply
+        if (c == '\n' && currentLineIsBlank) {
+          // send a standard http response header
+          client.println("HTTP/1.1 200 OK");
+          client.println("Content-Type: text/html");
+          client.println();
+          // print the current readings, in HTML format:
+          client.print("Temperature: ");
+          client.print("dummy temperature");
+          client.print(" degrees C");
+          client.println("<br />");
+          client.print("Pressure: " + String("dummy pressure"));
+          client.print(" Pa");
+          client.println("<br />");
+          break;
+        }
+        if (c == '\n') {
+          // you're starting a new line
+          currentLineIsBlank = true;
+        } else if (c != '\r') {
+          // you've gotten a character on the current line
+          currentLineIsBlank = false;
+        }
+      }
+    }
+    // give the web browser time to receive the data
+    delay(1);
+    // close the connection:
+    client.stop();
+    Serial.println("Connection closed");
+  }
+  Serial.println("No client");
+}
+
 
 void debugMode()
 {
@@ -139,6 +224,7 @@ void debugMode()
   else{
     return;
   }
+  Serial.println("I am in debug mode");
   if (rc.length() != 0){
     Serial.println(rc.c_str());
     if (rc.compareTo("write") == 0){
@@ -188,9 +274,19 @@ void debugMode()
       }
     }
     else if (rc.compareTo("trig") == 0){
-      digitalWrite(CONVST,)
+      timer = 0;
+      digitalWrite(CONVST,HIGH);
+      delayMicroseconds(10);
+      digitalWrite(CONVST,LOW);
     }
-
+    else if (rc.compareTo("mac") == 0){
+      unsigned char mac[6];
+      for(uint8_t by=0; by<2; by++) mac[by]=(HW_OCOTP_MAC1 >> ((1-by)*8)) & 0xFF;
+      for(uint8_t by=0; by<4; by++) mac[by+2]=(HW_OCOTP_MAC0 >> ((3-by)*8)) & 0xFF;
+      Serial.printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      initTCP();
+      listenForEthernetClients();
+    }
     else{
       unsigned short tmp[5];
       SPI.beginTransaction(Rsetting);
@@ -261,7 +357,11 @@ void setup()
   // //Initialize ADF4159 to default frequency from EEPROM
   // delay(1000);
   // pfdInit();
-
+  
+  // while (!Serial) {
+  //   ; // wait for serial port to connect. Needed for native USB port only
+  // }
+  initTCP();
 }
 
 //main function
