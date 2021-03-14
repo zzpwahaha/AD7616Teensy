@@ -59,6 +59,8 @@ uint32_t rampCounter1;  //number of uploaded ramp in ch1
 
 /*******************************************************************************************************************/
 #define AD7616DEBUG
+bool debug = false;
+
 const char STARTM = '(';        // start marker for each set of data
 const char SEPAR = ',';         // separator within one set of data
 const char ENDM = ')';          // end marker for each set of data
@@ -86,13 +88,13 @@ const short BUSY = 14;    // in
 const short TRIG = 16;    // in
 
 
-const SPISettings Wsetting(50000000, MSBFIRST, SPI_MODE3);
-const SPISettings Rsetting(50000000, MSBFIRST, SPI_MODE3);
+const SPISettings Wsetting(10000000, MSBFIRST, SPI_MODE2);
+const SPISettings Rsetting(10000000, MSBFIRST, SPI_MODE2);
 const short configRegAddr   = 0b0000100;
 const short channRegAddr    = 0b0000110;
 const short rangeRegAddr[]  = {0b0001000, 0b0001010, 0b0001100, 0b0001110}; /*A1,A2,B1,B2*/
 const short rangeRegValue[] = {0x0000, 0x0000, 0x0000, 0x0000};//{0x00aa, 0x00bb, 0x00cc, 0x00dd}; // right now the values are for test
-const short dummyReadAddr   = (1<<9);
+const short dummyReadAddr   = 0/*(1<<9)*/;
 
 elapsedMicros timer;
 /******************ETHERNET CONNECTION****************************/
@@ -143,14 +145,21 @@ void initADC()
 
 void readADC()
 {
+  Serial.println("Start to read ADC");
   for (unsigned int repts = 0; repts < seqRepNumber[seqCounter]; repts++)
   {
     seqRunning = true;
     digitalWrite(CONVST,HIGH);
     delayNanoseconds(200);
     digitalWrite(CONVST,LOW);
-    while (seqRunning) {}
+    while (seqRunning){
+      // delayMicroseconds(1);
+      Serial.flush();
+      // Serial.println("asd");
+    }
+    Serial.println("Finish read ADC" + String(repts));
   }
+  Serial.println("Finish read ADC all");
   seqCounter++;
   if (seqCounter<seqTotal){
     writeSeq(seqCounter);
@@ -163,6 +172,7 @@ void dummyReadADC()
   digitalWrite(CONVST,HIGH);
   delayNanoseconds(200);
   digitalWrite(CONVST,LOW);
+  Serial.println("Start dummy read");
 }
 
 void dataReady()
@@ -175,9 +185,24 @@ void dataReady()
     digitalWrite(CS,HIGH);
     SPI.beginTransaction(Rsetting);
     dummyRead = false;
+    Serial.println("Finished dummy read");
     return;
   }
+  else if (debug) {
+    Serial.println("debug sequence output 16 ports");
+    SPI.beginTransaction(Rsetting);
+    for (short i = 0; i < 16; i++)
+    {
+      digitalWrite(CS,LOW);
+      signed short data = SPI.transfer16(0);
+      Serial.println(data);
+    }
+    debug = false;
+    return;
+  }
+  
 
+  Serial.println("received a falling edge of BUSY");
   // Serial.printf("Total time: %u \r\n", static_cast<unsigned long>(timer) );
   unsigned short dataA[seqChannelSize[seqCounter][0]];
   unsigned short dataB[seqChannelSize[seqCounter][1]];
@@ -190,8 +215,11 @@ void dataReady()
     dataA[i] = SPI.transfer16(dummyReadAddr); // D9=1 is the reserved addr which does not correspond to anything
     dataB[i] = SPI.transfer16(dummyReadAddr); // D9=1 is the reserved addr which does not correspond to anything
     digitalWrite(CS,HIGH);
+    Serial.printf("dataA: %d, dataB: %d \r\n", dataA[i],dataB[i]);
   }
-  if (minSize==maxSize){}
+  if (minSize==maxSize){
+    Serial.println("size of channel A and B are equal");
+  }
   else if (minSize == seqChannelSize[seqCounter][0]){ /*read channel B*/
     for (unsigned char i = minSize; i < maxSize; i++)
     {
@@ -212,13 +240,16 @@ void dataReady()
   }
 
   /*transfer data to external mem*/
-
-  memcpy(ADCDATA + DATASIZE, dataA, sizeof(dataA));
-  DATASIZE += sizeof(dataA);
+  Serial.println("finished a falling edge of BUSY");
+  Serial.printf("Size of dataA is %d, channel size is %d \r\n",sizeof(dataA), seqChannelSize[seqCounter][0]);
+  Serial.printf("Size of dataB is %d, channel size is %d \r\n",sizeof(dataB), seqChannelSize[seqCounter][1]);
+  memcpy(ADCDATA + DATASIZE, dataA, sizeof(dataA)); // sizeof returns the number of byte in total to be copied
+  DATASIZE += seqChannelSize[seqCounter][0]; //sizeof(dataA) / 2/*byte for short*/;
   memcpy(ADCDATA + DATASIZE, dataB, sizeof(dataB));
-  DATASIZE += sizeof(dataB);
-
+  DATASIZE += seqChannelSize[seqCounter][1]; //sizeof(dataB) / 2/*byte for short*/;
+  Serial.println("finished copying data to ext mem");
   seqRunning = false;
+  Serial.println("finished setting seqRunning");
 }
 
 
@@ -352,6 +383,25 @@ bool debugMode(const String& rc)
         Serial.println(seqtmp[i] & 0xff,HEX);
       }
     }
+    else if (rc.compareTo("writeseq") == 0){
+      SPI.beginTransaction(Rsetting);
+      unsigned short channel[] = {4,5,6};
+      for (short i = 0; i < 3; i++)
+      {
+        digitalWrite(CS,LOW);
+        SPI.transfer16((0b11<<14) + (i<<9) + (0<<8) + (channel[i]<<4) + (channel[i])); 
+        digitalWrite(CS, HIGH); 
+      }
+      digitalWrite(CS,LOW);
+      SPI.transfer16((0b11<<14) + (2<<9) + (1<<8) + (channel[2]<<4) + (channel[2])); 
+      digitalWrite(CS, HIGH); 
+    }
+    else if (rc.compareTo("debugtrig") == 0){
+      debug = true;
+      digitalWrite(CONVST,HIGH);
+      delayNanoseconds(200);
+      digitalWrite(CONVST,LOW);
+    }
     else if (rc.compareTo("trig") == 0){
       // timer = 0;
       // digitalWrite(CONVST,HIGH);
@@ -438,6 +488,7 @@ void resetSeqTEENSY(){
   memset(seqChannelB, 0, sizeof(seqChannelB));
   memset(seqChannelSize, 0,sizeof(seqChannelSize));
   memset(seqRepNumber, 0, sizeof(seqRepNumber));
+  memset(ADCDATA, 0, sizeof(ADCDATA));
 }
 
 void writeSeq(unsigned short index){
@@ -449,21 +500,28 @@ void writeSeq(unsigned short index){
   digitalWrite(CS, HIGH); 
 
   /*program sequencer stack for channel A and B*/
-  unsigned char minSize = min(seqChannelSize[index][0],seqChannelSize[index][1]);
-  unsigned char maxSize = max(seqChannelSize[index][0],seqChannelSize[index][1]);
-  for (unsigned char i = 0; i < minSize; i++) /*fill A and B*/
+  unsigned short minSize = min(seqChannelSize[index][0],seqChannelSize[index][1]);
+  unsigned short maxSize = max(seqChannelSize[index][0],seqChannelSize[index][1]);
+  for (unsigned short i = 0; i < minSize; i++) /*fill A and B*/
   {
     digitalWrite(CS,LOW);
     SPI.transfer16((1<<15)+ (1<<14) + (i<<9) + (0<<8) + (seqChannelB[index][i]<<4) + (seqChannelA[index][i])); // fill sequencer as ABAB...
     digitalWrite(CS, HIGH); 
+
+    Serial.printf("write seq %d: ", i);
+    Serial.println((1<<15)+ (1<<14) + (i<<9) + (0<<8) + (seqChannelB[index][i]<<4) + (seqChannelA[index][i]), 2);
   }
   if (minSize == maxSize) { /*rewrite the last seq to indicate termination*/
     digitalWrite(CS,LOW);
     SPI.transfer16((1<<15)+ (1<<14) + ((maxSize-1)<<9) + (1<<8) + (seqChannelB[index][maxSize-1]<<4) + (seqChannelA[index][maxSize-1]));
     digitalWrite(CS, HIGH); 
+    Serial.println("Size A and Size B are equal");
+    Serial.printf("write seq %d: ", maxSize-1);
+    Serial.println((1<<15)+ (1<<14) + ((maxSize-1)<<9) + (1<<8) + (seqChannelB[index][maxSize-1]<<4) + (seqChannelA[index][maxSize-1]), 2);
   }
   else if (minSize == seqChannelSize[index][0]){ /*sizeB>sizeA, fill B, default A to A0*/
-    for (unsigned char i = minSize; i < maxSize - 1; i++)
+    Serial.println("Size A < Size B");
+    for (unsigned short i = minSize; i < maxSize - 1; i++)
     {
       digitalWrite(CS,LOW);
       SPI.transfer16((1<<15)+ (1<<14) + (i<<9) + (0<<8) + (seqChannelB[index][i]<<4) + (0)); 
@@ -474,7 +532,8 @@ void writeSeq(unsigned short index){
     digitalWrite(CS, HIGH);
   }
   else if (minSize == seqChannelSize[index][1]){ /*sizeB<sizeA, fill A, default B to B0*/
-    for (unsigned char i = minSize; i < maxSize - 1; i++)
+    Serial.println("Size A > Size B");
+    for (unsigned short i = minSize; i < maxSize - 1; i++)
     {
       digitalWrite(CS,LOW);
       SPI.transfer16((1<<15)+ (1<<14) + (i<<9) + (0<<8) + (0<<4) + (seqChannelA[index][i])); // fill sequencer as ABAB...
@@ -560,6 +619,21 @@ void interpretCmd()
         seqChannelB[numSEQ][seqChannelSize[numSEQ][1]++] = j;
       }
     }
+
+    Serial.printf("seqChannelA(numSEQ = %d): ", numSEQ);
+    for (unsigned char j = 0; j < seqChannelSize[numSEQ][0]; j++)
+    {
+      Serial.printf("%d, ",seqChannelA[numSEQ][j]);
+    }
+    Serial.print("\r\n");
+
+    Serial.printf("seqChannelB(numSEQ = %d): ", numSEQ);
+    for (unsigned char j = 0; j < seqChannelSize[numSEQ][1]; j++)
+    {
+      Serial.printf("%d, ",seqChannelB[numSEQ][j]);
+    }
+    Serial.print("\r\n");
+    
     seqRepNumber[numSEQ] = repts;
     // Serial.println(seqChannel[numSEQ]);
     numSEQ++;
