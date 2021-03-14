@@ -1,113 +1,72 @@
 /****************************************************************************************
- * This is the firmware for the teensy 3.1/3.2 that takes command from serial interface 
- * and program the ADF4159 IC. 
- * The teensy micrcontroller also generates the necessary data for ramping the frequency.
- *  
- * The control command takes the following form. 
- * (ch, start freq, stop freq, ramp step number, ramp length)
- * 
- * range for input data:
- * Ch:0,1
- * Start freq: 1000-6000(MHz)  If start freq = stop freq then the ramp is ignored.
- * Stop freq:1000-6000(MHz)    If start freq = stop freq then the ramp is ignored.
- * Ramp step number: <2^32     Must be a positive integer
- * Ramp length: in ms.         Minimum step time is limited to 20us.
- *                             i.e. step length/step munber >20us
- *              
- * Anything out of range, the control will return an error.
- * Nothing will be updated. 
- * If the command is entered sucessfully, the control will give the echo of the command.
- * During power on, the controller programs the ADF4159 to the last defult frequency.
+
  ***************************************************************************************/
 
-//Including necessary libraries 
 #include <Arduino.h>
 #include <SPI.h>
 #include <EEPROMex.h>
 #include <stdio.h>
 #include <NativeEthernet.h>
 
-//Function declaration
-void pfdInit();
-uint32_t calcFTW(uint32_t freq);
-void updatePFD(uint32_t FTW, int LE);
-
-bool dataCheck(uint32_t par[5]);
-void setRamp0();
-void setRamp1();
-
-//Variable declaration
-
-
-elapsedMicros rampDelay0;  //ramp delay timer0
-elapsedMicros rampDelay1;  //ramp delay timer1
-
-
-
-uint32_t stepCount0;  //ramp step counter for ch0
-uint32_t stepCount1;  //ramp step counter for ch1
-
-uint32_t rampflg0;  //ramp start/stop flag
-uint32_t rampflg1;  //ramp start/stop flag
-
-uint32_t rampCounter0;  //number of uploaded ramp in ch0
-uint32_t rampCounter1;  //number of uploaded ramp in ch1
-
-
-
-
-
-/*******************************************************************************************************************/
+/******************************************************VARIABLES*************************************************************/
 #define AD7616DEBUG
 bool debug = false;
 
+/*interpreting input command*/
 const char STARTM = '(';        // start marker for each set of data
 const char SEPAR = ',';         // separator within one set of data
 const char ENDM = ')';          // end marker for each set of data
 const short MAXIN = 600;        // maximum number of chars in input stream
 const short MAXSEQ = MAXIN / 6; // maximum number of sequences
 
+/*global vairbale for sequencer command*/
 unsigned char seqChannelA[MAXSEQ][8];    // measured channel index(0-7) in sequencer for channel A, the size is stored in seqChannelSize
 unsigned char seqChannelB[MAXSEQ][8];    // measured channel index(0-7) in sequencer for channel B, the size is stored in seqChannelSize
-unsigned char seqChannelSize[MAXSEQ][2];  // size of the measured channel in A and B respesctively
-unsigned long seqRepNumber[MAXSEQ];       // number of repeat measurement in sequencer   
+unsigned char seqChannelSize[MAXSEQ][2]; // size of the measured channel in A and B respesctively
+unsigned long seqRepNumber[MAXSEQ];      // number of repeat measurement in sequencer   
 
 short seqTotal = 0;
 short seqCounter = 0;
 bool seqRunning = false; 
 bool dummyRead = false;
 
+/*external 8M memory storage*/
 EXTMEM short ADCDATA[4000000];
 unsigned int DATASIZE = 0; 
 
-const short RESET = 9;
+/*Teensy pin configuration*/
+const short RESET = 9;    // out
 const short CS = 10;      // out
 const short SCLK = 13;    // out, only for initializing clock to be high in initDAC, since we are using mode2 of SPI. Maybe not nessary
-const short CONVST = 15;  // out
-const short BUSY = 14;    // in 
-const short TRIG = 16;    // in
+const short CONVST = 15;  // out, triggers AD7616 to start single sequence
+const short BUSY = 14;    // in, falling edge trigers dataReady 
+const short TRIG = 16;    // in, external trigger for starting one full ADC read, repeatition * sequence
 
+/*SPI setting*/
+const SPISettings Wsetting(45000000, MSBFIRST, SPI_MODE2);
+const SPISettings Rsetting(45000000, MSBFIRST, SPI_MODE2);
 
-const SPISettings Wsetting(10000000, MSBFIRST, SPI_MODE2);
-const SPISettings Rsetting(10000000, MSBFIRST, SPI_MODE2);
+/*internal register address of AD7616, refer to datasheet*/
 const short configRegAddr   = 0b0000100;
 const short channRegAddr    = 0b0000110;
 const short rangeRegAddr[]  = {0b0001000, 0b0001010, 0b0001100, 0b0001110}; /*A1,A2,B1,B2*/
 const short rangeRegValue[] = {0x0000, 0x0000, 0x0000, 0x0000};//{0x00aa, 0x00bb, 0x00cc, 0x00dd}; // right now the values are for test
-const short dummyReadAddr   = 0/*(1<<9)*/;
+const short dummyReadAddr   = 0/*(1<<9)*/; // used for reading conversion result out of ADC, turns out can just use 0, if use 1<<9 which is a reserved addr, only read out the first result and the following result are all zeros
 
 elapsedMicros timer;
-/******************ETHERNET CONNECTION****************************/
+/****************************************************ETHERNET CONNECTION****************************************************/
 byte mac[] = {0x04,0xe9,0xe5,0x0e,0x0c,0xe0};
 IPAddress ip(10,10,0,10);
 EthernetServer server(80);
 
+
+/******************************************************FUNCTION HEAD********************************************************/
 bool debugMode(const String& rc);
 
 void interpretCmd();
 
 void initADC();
-void readADC();
+void startReadADC();
 void dataReady();
 void dummyReadADC();
 
@@ -119,9 +78,40 @@ void listenForEthernetClients();
 void resetSeqTEENSY();
 void writeSeq(unsigned short index);
 
+/********************************************************************************************************************************/
+//initialization of hardware
+void setup() 
+{  
+  // Initializing USB serial to 12Mbit/sec. Teensy ignores the 9600 baud rate. see https://www.pjrc.com/teensy/td_serial.html
+  Serial.begin(9600);
+
+  pinMode(RESET, OUTPUT);
+  pinMode(CS, OUTPUT);
+  pinMode(CONVST, OUTPUT);
+  pinMode(BUSY, INPUT);
+  pinMode(TRIG, INPUT);
+  digitalWrite(CS,HIGH);
+  attachInterrupt(digitalPinToInterrupt(TRIG),startReadADC,RISING);
+  attachInterrupt(digitalPinToInterrupt(BUSY),dataReady, FALLING);
+
+  SPI.begin();
+  delay(500);
+  initADC();
+  initTCP();
+}
+
+//main function
+void loop() 
+{
+  // put your main code here, to run repeatedly:
+  if (Serial.available()){
+    interpretCmd();
+  }
+}
+
 void initADC()
 {
-  digitalWrite(SCLK, HIGH); //prepare it for the SPI, just to be safe
+  // digitalWrite(SCLK, HIGH); //prepare it for the SPI, just to be safe
   digitalWrite(RESET, LOW);
   delay(1); //keep low for at least 1.2us to set a full reset
   digitalWrite(RESET, HIGH);
@@ -143,7 +133,7 @@ void initADC()
 
 }
 
-void readADC()
+void startReadADC()
 {
   Serial.println("Start to read ADC");
   for (unsigned int repts = 0; repts < seqRepNumber[seqCounter]; repts++)
@@ -154,7 +144,7 @@ void readADC()
     digitalWrite(CONVST,LOW);
     while (seqRunning){
       // delayMicroseconds(1);
-      Serial.flush();
+      Serial.flush(); // have to add a serial related operation here otherwise it won't jump out of while loop even seqRunning is false
       // Serial.println("asd");
     }
     Serial.println("Finish read ADC" + String(repts));
@@ -407,7 +397,7 @@ bool debugMode(const String& rc)
       // digitalWrite(CONVST,HIGH);
       // delayMicroseconds(10);
       // digitalWrite(CONVST,LOW);
-      readADC();
+      startReadADC();
       sendADCDATA();
     }
     else if (rc.compareTo("mac") == 0){
@@ -455,28 +445,6 @@ bool debugMode(const String& rc)
   }
   // delay(100);
   return gotcha;
-}
-
-//initialization of hardware
-void setup() 
-{  
-  // Initializing USB serial to 12Mbit/sec. Teensy ignores the 9600 baud rate. see https://www.pjrc.com/teensy/td_serial.html
-  Serial.begin(9600);
-
-  pinMode(RESET, OUTPUT);
-  pinMode(CS, OUTPUT);
-  pinMode(CONVST, OUTPUT);
-  pinMode(BUSY, INPUT);
-  pinMode(TRIG, INPUT);
-  digitalWrite(CS,HIGH);
-  attachInterrupt(digitalPinToInterrupt(TRIG),readADC,RISING);
-  attachInterrupt(digitalPinToInterrupt(BUSY),dataReady, FALLING);
-
-  SPI.begin();
-  delay(500);
-  initADC();
-
-  initTCP();
 }
 
 void resetSeqTEENSY(){
@@ -646,12 +614,4 @@ void interpretCmd()
 
 }
 
-//main function
-void loop() 
-{
-  // put your main code here, to run repeatedly:
-  if (Serial.available()){
-    interpretCmd();
-  }
 
-}
