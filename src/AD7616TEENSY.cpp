@@ -136,6 +136,7 @@ void initADC()
 void startReadADC()
 {
   Serial.println("Start to read ADC");
+  timer = 0;
   for (unsigned int repts = 0; repts < seqRepNumber[seqCounter]; repts++)
   {
     seqRunning = true;
@@ -149,10 +150,15 @@ void startReadADC()
     }
     Serial.println("Finish read ADC" + String(repts));
   }
-  Serial.println("Finish read ADC all");
+  Serial.printf("Finish read ADC all in %d us, %.2f us per repetition and %.2f per repetition per ports\r\n", 
+    (unsigned long)timer, (double)timer / seqRepNumber[seqCounter], 
+    (double)timer / seqRepNumber[seqCounter] / (seqChannelSize[seqCounter][0]+seqChannelSize[seqCounter][1])  );
   seqCounter++;
   if (seqCounter<seqTotal){
     writeSeq(seqCounter);
+  }
+  else{
+    Serial.println("Finised all stored sequencer command");
   }
 }
 
@@ -191,11 +197,10 @@ void dataReady()
     return;
   }
   
-
   Serial.println("received a falling edge of BUSY");
   // Serial.printf("Total time: %u \r\n", static_cast<unsigned long>(timer) );
-  unsigned short dataA[seqChannelSize[seqCounter][0]];
-  unsigned short dataB[seqChannelSize[seqCounter][1]];
+  short dataA[seqChannelSize[seqCounter][0]];
+  short dataB[seqChannelSize[seqCounter][1]];
   unsigned char minSize = min(seqChannelSize[seqCounter][0],seqChannelSize[seqCounter][1]);
   unsigned char maxSize = max(seqChannelSize[seqCounter][0],seqChannelSize[seqCounter][1]);
   SPI.beginTransaction(Rsetting);
@@ -228,7 +233,7 @@ void dataReady()
       digitalWrite(CS,HIGH);
     }
   }
-
+  
   /*transfer data to external mem*/
   Serial.println("finished a falling edge of BUSY");
   Serial.printf("Size of dataA is %d, channel size is %d \r\n",sizeof(dataA), seqChannelSize[seqCounter][0]);
@@ -237,7 +242,8 @@ void dataReady()
   DATASIZE += seqChannelSize[seqCounter][0]; //sizeof(dataA) / 2/*byte for short*/;
   memcpy(ADCDATA + DATASIZE, dataB, sizeof(dataB));
   DATASIZE += seqChannelSize[seqCounter][1]; //sizeof(dataB) / 2/*byte for short*/;
-  Serial.println("finished copying data to ext mem");
+
+  Serial.println("Finished copying data to ext mem");
   seqRunning = false;
   Serial.println("finished setting seqRunning");
 }
@@ -245,12 +251,14 @@ void dataReady()
 
 void sendADCDATA()
 {
+  timer = 0;
   for (size_t i = 0; i < DATASIZE-1; i++)
   {
     Serial.printf("%d,",ADCDATA[i]);
   }
   Serial.println(ADCDATA[DATASIZE-1]);
-  
+  Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
+
 }
 
 
