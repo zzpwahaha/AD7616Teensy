@@ -16,6 +16,7 @@ bool debug = false;
 const char STARTM = '(';        // start marker for each set of data
 const char SEPAR = ',';         // separator within one set of data
 const char ENDM = ')';          // end marker for each set of data
+const char TERMINATOR = '#';    // terminator for tcp socket connection, the data in should end with TERMINATOR + '\0'
 const short MAXIN = 600;        // maximum number of chars in input stream
 const short MAXSEQ = MAXIN / 6; // maximum number of sequences
 
@@ -302,16 +303,19 @@ bool listenForEthernetClients(String& rc)
     char buff[MAXIN];
     if (client.available() > 0) {
       size_t size = client.readBytesUntil('\0',buff,MAXIN);
-      if (buff[size-1] != 0){
-        Serial.printf("Error in reading TCP command: end character is %c, but should be null\r\n", buff[size-1]);
+      if (buff[size-1] != TERMINATOR){
+        Serial.println(buff);
+        Serial.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", size, buff[size-1],TERMINATOR);
         return false;
       }
       if (server.available()){
+        Serial.println(buff);
         Serial.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
         return false;
       }
+      buff[size-1] = 0; // remove TERMINATOR by changing the TERMINATOR to null 
       rc = String(buff);
-      Serial.println("Command from TCP socket" + rc + "of size: " + String(size));
+      Serial.println("Command from TCP socket " + rc + " of size: " + String(size));
       return true;
       // note null(0) in String will make string be chopped at that point, can only put it in char[] 
     }
@@ -402,6 +406,7 @@ bool debugMode(const String& rc)
       for(uint8_t by=0; by<2; by++) mac[by]=(HW_OCOTP_MAC1 >> ((1-by)*8)) & 0xFF;
       for(uint8_t by=0; by<4; by++) mac[by+2]=(HW_OCOTP_MAC0 >> ((3-by)*8)) & 0xFF;
       Serial.printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      server.printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       // initTCP();
       // listenForEthernetClients();
     }
@@ -437,6 +442,7 @@ bool debugMode(const String& rc)
     }
     else{
       gotcha = false;
+      Serial.printf("Command %s is not recongized in debug mode\r\n", rc.c_str());
     }
 
   }
