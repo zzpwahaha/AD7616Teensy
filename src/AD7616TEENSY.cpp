@@ -73,7 +73,7 @@ void dummyReadADC();
 void sendADCDATA();
 
 void initTCP();
-void listenForEthernetClients();
+bool listenForEthernetClients(String& rc);
 
 void resetSeqTEENSY();
 void writeSeq(unsigned short index);
@@ -107,6 +107,16 @@ void loop()
   if (Serial.available()){
     interpretCmd();
   }
+  else{
+    String rc;
+    bool success = listenForEthernetClients(rc);
+    if (success){
+      debugMode(rc);
+    }
+  }
+
+  // listenForEthernetClients();
+
 }
 
 void initADC()
@@ -279,55 +289,34 @@ void initTCP()
   Serial.println("Success start \r\n");
   // start listening for clients
   server.begin();
-
+  
 }
 
-void listenForEthernetClients() 
+bool listenForEthernetClients(String& rc) 
 {
   // listen for incoming clients
   EthernetClient client = server.available();
-  Serial.println("Looking for client");
+  // Serial.println("Looking for client");
   if (client) {
     Serial.println("Got a client");
-    // an http request ends with a blank line
-    boolean currentLineIsBlank = true;
-    while (client.connected()) {
-      if (client.available() > 0) {
-        char c = client.read();
-        // if you've gotten to the end of the line (received a newline
-        // character) and the line is blank, the http request has ended,
-        // so you can send a reply
-        if (c == '\n' && currentLineIsBlank) {
-          // send a standard http response header
-          client.println("HTTP/1.1 200 OK");
-          client.println("Content-Type: text/html");
-          client.println();
-          // print the current readings, in HTML format:
-          client.print("Temperature: ");
-          client.print("dummy temperature");
-          client.print(" degrees C");
-          client.println("<br />");
-          client.print("Pressure: " + String("dummy pressure"));
-          client.print(" Pa");
-          client.println("<br />");
-          break;
-        }
-        if (c == '\n') {
-          // you're starting a new line
-          currentLineIsBlank = true;
-        } else if (c != '\r') {
-          // you've gotten a character on the current line
-          currentLineIsBlank = false;
-        }
+    char buff[MAXIN];
+    if (client.available() > 0) {
+      size_t size = client.readBytesUntil('\0',buff,MAXIN);
+      if (buff[size-1] != 0){
+        Serial.printf("Error in reading TCP command: end character is %c, but should be null\r\n", buff[size-1]);
+        return false;
       }
+      if (server.available()){
+        Serial.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
+        return false;
+      }
+      rc = String(buff);
+      Serial.println("Command from TCP socket" + rc + "of size: " + String(size));
+      return true;
+      // note null(0) in String will make string be chopped at that point, can only put it in char[] 
     }
-    // give the web browser time to receive the data
-    delay(1);
-    // close the connection:
-    client.stop();
-    Serial.println("Connection closed");
   }
-  Serial.println("No client");
+  return false;
 }
 
 
@@ -406,15 +395,15 @@ bool debugMode(const String& rc)
       // delayMicroseconds(10);
       // digitalWrite(CONVST,LOW);
       startReadADC();
-      sendADCDATA();
+      sendADCDATA();//this send all valid storage of all previous acquisition
     }
     else if (rc.compareTo("mac") == 0){
       unsigned char mac[6];
       for(uint8_t by=0; by<2; by++) mac[by]=(HW_OCOTP_MAC1 >> ((1-by)*8)) & 0xFF;
       for(uint8_t by=0; by<4; by++) mac[by+2]=(HW_OCOTP_MAC0 >> ((3-by)*8)) & 0xFF;
       Serial.printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      initTCP();
-      listenForEthernetClients();
+      // initTCP();
+      // listenForEthernetClients();
     }
     else if (rc.compareTo("readreg") == 0){
       unsigned short tmp[5];
@@ -538,6 +527,7 @@ void interpretCmd()
   if (rc.length()==0){
     Serial.println("Error: nothing received");
   }
+
   #ifdef AD7616DEBUG
   if (debugMode(rc)) {
     return;
