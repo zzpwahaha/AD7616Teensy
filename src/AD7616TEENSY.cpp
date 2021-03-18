@@ -13,10 +13,12 @@
 bool debug = false;
 
 /*interpreting input command*/
-const char STARTM = '(';        // start marker for each set of data
-const char SEPAR = ',';         // separator within one set of data
-const char ENDM = ')';          // end marker for each set of data
-const char TERMINATOR = '#';    // terminator for tcp socket connection, the data in should end with TERMINATOR + '\0'
+const char STARTM = '(';        // start marker for each set of command data
+const char SEPAR = ',';         // separator within one set of command data
+const char ENDM = ')';          // end marker for each set of command data
+const char TERMINATOR = '#';    // terminator for tcp socket connection, the command data in should end with TERMINATOR + '\0'
+const char PLACEHOLDER = '*';   // placeholder for sending command, if send in (*xx,xxxx), it will go as channel conversion, otherwise (xxx,xxxx) will go as command
+const short CMDHEADSIZE = 3;    // size of the command head, ie size of 'xxx' before the separator from (xxx,xxxx)
 const short MAXIN = 600;        // maximum number of chars in input stream
 const short MAXSEQ = MAXIN / 6; // maximum number of sequences
 
@@ -64,7 +66,8 @@ EthernetServer server(80);
 /******************************************************FUNCTION HEAD********************************************************/
 bool debugMode(const String& rc);
 
-void interpretCmd();
+void interpretCmd(const String& rc);
+void handleDirectCmd(String cmd, String content);
 
 void initADC();
 void startReadADC();
@@ -90,7 +93,7 @@ void setup()
   pinMode(CS, OUTPUT);
   pinMode(CONVST, OUTPUT);
   pinMode(BUSY, INPUT);
-  pinMode(TRIG, INPUT);
+  pinMode(TRIG, INPUT_PULLDOWN);
   digitalWrite(CS,HIGH);
   attachInterrupt(digitalPinToInterrupt(TRIG),startReadADC,RISING);
   attachInterrupt(digitalPinToInterrupt(BUSY),dataReady, FALLING);
@@ -106,13 +109,17 @@ void loop()
 {
   // put your main code here, to run repeatedly:
   if (Serial.available()){
-    interpretCmd();
+    String rc = Serial.readString(MAXIN);
+    if (rc.length()==0){
+      Serial.println("Error: nothing received");
+    }
+    interpretCmd(rc);
   }
   else{
     String rc;
     bool success = listenForEthernetClients(rc);
     if (success){
-      debugMode(rc);
+      interpretCmd(rc);
     }
   }
 
@@ -147,6 +154,11 @@ void initADC()
 void startReadADC()
 {
   Serial.println("Start to read ADC");
+  if (seqTotal==0){
+    Serial.println("Error: sequence number is zero, no sequence is armed for trigger");
+    server.println("Error: sequence number is zero, no sequence is armed for trigger");
+    return;
+  }
   timer = 0;
   for (unsigned int repts = 0; repts < seqRepNumber[seqCounter]; repts++)
   {
@@ -169,6 +181,7 @@ void startReadADC()
     writeSeq(seqCounter);
   }
   else{
+    sendADCDATA();
     Serial.println("Finised all stored sequencer command");
   }
 }
@@ -259,15 +272,17 @@ void dataReady()
   Serial.println("finished setting seqRunning");
 }
 
-
+//the TCP socket buffer content will exist if not read by client
 void sendADCDATA()
 {
   timer = 0;
   for (size_t i = 0; i < DATASIZE-1; i++)
   {
     Serial.printf("%d,",ADCDATA[i]);
+    server.printf("%c%c",(char)(ADCDATA[i]>>8),(char)(ADCDATA[i]));
   }
   Serial.println(ADCDATA[DATASIZE-1]);
+  server.printf("%c%c",(char)(ADCDATA[DATASIZE-1]>>8),(char)(ADCDATA[DATASIZE-1]));
   Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
 
 }
@@ -306,11 +321,13 @@ bool listenForEthernetClients(String& rc)
       if (buff[size-1] != TERMINATOR){
         Serial.println(buff);
         Serial.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", size, buff[size-1],TERMINATOR);
+        server.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", size, buff[size-1],TERMINATOR);
         return false;
       }
       if (server.available()){
         Serial.println(buff);
         Serial.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
+        server.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
         return false;
       }
       buff[size-1] = 0; // remove TERMINATOR by changing the TERMINATOR to null 
@@ -387,7 +404,7 @@ bool debugMode(const String& rc)
       SPI.transfer16((0b11<<14) + (2<<9) + (1<<8) + (channel[2]<<4) + (channel[2])); 
       digitalWrite(CS, HIGH); 
     }
-    else if (rc.compareTo("debugtrig") == 0){
+    else if (rc.compareTo("convst") == 0){
       debug = true;
       digitalWrite(CONVST,HIGH);
       delayNanoseconds(200);
@@ -399,14 +416,14 @@ bool debugMode(const String& rc)
       // delayMicroseconds(10);
       // digitalWrite(CONVST,LOW);
       startReadADC();
-      sendADCDATA();//this send all valid storage of all previous acquisition
+      // sendADCDATA();//this send all valid storage of all previous acquisition
     }
     else if (rc.compareTo("mac") == 0){
       unsigned char mac[6];
       for(uint8_t by=0; by<2; by++) mac[by]=(HW_OCOTP_MAC1 >> ((1-by)*8)) & 0xFF;
       for(uint8_t by=0; by<4; by++) mac[by+2]=(HW_OCOTP_MAC0 >> ((3-by)*8)) & 0xFF;
-      Serial.printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      server.printf("MAC: %02x:%02x:%02x:%02x:%02x:%02x\r\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      Serial.printf("MAC:%c %02x:%02x:%02x:%02x:%02x:%02x\r\n",0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      server.printf("MAC:%c %02x:%02x:%02x:%02x:%02x:%02x\r\n",0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       // initTCP();
       // listenForEthernetClients();
     }
@@ -527,95 +544,138 @@ void writeSeq(unsigned short index){
 
 }
 
-void interpretCmd()
+void interpretCmd(const String &rc)
 {
-  String rc = Serial.readString(MAXIN);
-  if (rc.length()==0){
-    Serial.println("Error: nothing received");
-  }
-
   #ifdef AD7616DEBUG
   if (debugMode(rc)) {
     return;
   }
   #endif
 
-  resetSeqTEENSY();
+
+  bool firstSeq = true;
   unsigned short charcnts = 0;
   unsigned short numSEQ = 0;
-  byte chnl[3];
+  byte chnl[CMDHEADSIZE + 1];
 
   while (charcnts < rc.length())
   {
     if (rc[charcnts++]!=STARTM) {
       Serial.println("Error: Start terminator \"" + String(STARTM) + "\" is missing");
+      server.println("Error: Start terminator \"" + String(STARTM) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
-    rc.getBytes(chnl,3,charcnts); // the last character is always '\0' by String::getBytes
+    rc.getBytes(chnl, CMDHEADSIZE+1, charcnts); // the last character is always '\0' by String::getBytes
     if (chnl[0]==0 || chnl[1]==0){
       Serial.println("Error: Encounter zero in channel selection");
+      server.println("Error: Encounter zero in channel selection");
       resetSeqTEENSY();
       return;
     }
     Serial.println((char*)chnl);
-    charcnts+=2;
+    charcnts+=CMDHEADSIZE;
     if (rc[charcnts++]!=SEPAR) {
       Serial.println("Error: Separator \"" + String(SEPAR) + "\" is missing");
+      server.println("Error: Separator \"" + String(SEPAR) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
     short endpos = rc.indexOf(ENDM, charcnts); // endposition points to END MARKER
-    long repts = rc.substring(charcnts,endpos).toInt(); // not including endposition, the endposition is filled with '\0' in the substring
-    if (repts<=0) {
-      Serial.println("Error: Repeatation number is less or equal to zero");
-      resetSeqTEENSY();
-      return;
-    }
-    Serial.println(repts);
+    String contents = rc.substring(charcnts,endpos); // not including endposition, the endposition is filled with '\0' in the substring
     charcnts = endpos;
     Serial.println(rc[charcnts]);
     if (rc[charcnts++]!=ENDM) {
       Serial.println("Error: Start terminator \"" + String(ENDM) + "\" is missing");
+      server.println("Error: Start terminator \"" + String(ENDM) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
-
-    // data in chnl is A7-A0, B7-B0
-    for (unsigned char j = 0; j < 8/*bits*/; j++)
-    {
-      if ((chnl[0]>>j) & 0b1){ /*channel A*/
-        seqChannelA[numSEQ][seqChannelSize[numSEQ][0]++] = j;
-      }
-      if ((chnl[1]>>j) & 0b1){ /*channel B*/
-        seqChannelB[numSEQ][seqChannelSize[numSEQ][1]++] = j;
-      }
-    }
-
-    Serial.printf("seqChannelA(numSEQ = %d): ", numSEQ);
-    for (unsigned char j = 0; j < seqChannelSize[numSEQ][0]; j++)
-    {
-      Serial.printf("%d, ",seqChannelA[numSEQ][j]);
-    }
-    Serial.print("\r\n");
-
-    Serial.printf("seqChannelB(numSEQ = %d): ", numSEQ);
-    for (unsigned char j = 0; j < seqChannelSize[numSEQ][1]; j++)
-    {
-      Serial.printf("%d, ",seqChannelB[numSEQ][j]);
-    }
-    Serial.print("\r\n");
     
-    seqRepNumber[numSEQ] = repts;
-    // Serial.println(seqChannel[numSEQ]);
-    numSEQ++;
-  }
-  seqTotal = numSEQ;
+    if (chnl[0]==PLACEHOLDER){ /*interpret as (*xx,xxxx), ie the channel to be sampled and the repeatition number */
+      if(firstSeq){
+        resetSeqTEENSY();
+        firstSeq = false;
+      }
+      long repts = contents.toInt(); 
+      if (repts<=0) {
+        Serial.println("Error: Repeatation number is less or equal to zero");
+        resetSeqTEENSY();
+        return;
+      }
+      Serial.println(repts);
 
-  /*write the first sequence and wait for trigger, the following sequence is written after each data out*/
-  writeSeq(seqCounter);
-  Serial.println("Success in decoding incoming sequence");
+      // data in chnl is A7-A0, B7-B0
+      for (unsigned char j = 0; j < 8/*bits*/; j++)
+      {
+        if ((chnl[1]>>j) & 0b1){ /*channel A*/
+          seqChannelA[numSEQ][seqChannelSize[numSEQ][0]++] = j;
+        }
+        if ((chnl[2]>>j) & 0b1){ /*channel B*/
+          seqChannelB[numSEQ][seqChannelSize[numSEQ][1]++] = j;
+        }
+      }
+
+      Serial.printf("seqChannelA(numSEQ = %d): ", numSEQ);
+      for (unsigned char j = 0; j < seqChannelSize[numSEQ][0]; j++)
+      {
+        Serial.printf("%d, ",seqChannelA[numSEQ][j]);
+      }
+      Serial.print("\r\n");
+
+      Serial.printf("seqChannelB(numSEQ = %d): ", numSEQ);
+      for (unsigned char j = 0; j < seqChannelSize[numSEQ][1]; j++)
+      {
+        Serial.printf("%d, ",seqChannelB[numSEQ][j]);
+      }
+      Serial.print("\r\n");
+      
+      seqRepNumber[numSEQ] = repts;
+      // Serial.println(seqChannel[numSEQ]);
+      numSEQ++;
+    }
+    else{/*interpret as (xxx,xxxx), ie sending in command*/
+      handleDirectCmd(String((char*)chnl),contents);
+    }
+  }
+
+  if (numSEQ>0){/*the incoming command containes sequencer*/
+    seqTotal = numSEQ;
+    /*write the first sequence and wait for trigger, the following sequence is written after each data out*/
+    writeSeq(seqCounter);
+    Serial.println("Success in decoding incoming sequence");
+  }
 
 }
 
+void handleDirectCmd(String cmd, String content)
+{
+  //note, be extremely careful with 0x00 in content since that may cause termination of the string
+  if(cmd.compareTo("rng") == 0){/*content is the input range of A3-A0,A7-A4,B3-B0,B7-B4 encoded as raw binary form 0b11 -> 10V, 0b01 -> 2.5V, 0b10 -> 5V*/
+    Serial.printf("Direct command, write range register with 0x%02X 0x%02X 0x%02X 0x%02X to A1A2,B1B2\r\n", content[0],content[1],content[2],content[3]);
+    if (content.length() != 4){
+      Serial.printf("Error: write range register with 0x%02X 0x%02X 0x%02X 0x%02X is invalid\r\n", content[0],content[1],content[2],content[3]);
+      server.printf("Error: write range register with 0x%02X 0x%02X 0x%02X 0x%02X is invalid\r\n", content[0],content[1],content[2],content[3]);
+    }
+    byte buff[4+1];
+    content.getBytes(buff,4+1);
+    SPI.beginTransaction(Wsetting);
+    for (short i = 0; i < 4; i++)
+    {
+      digitalWrite(CS,LOW);
+      SPI.transfer16((1<<15)+(rangeRegAddr[i]<<8) + buff[i/*2*(i/2)+1-(i%2)*/]); 
+      digitalWrite(CS, HIGH); 
+    }
+    server.println("Success in writing range register");
+  }
+  else if (cmd.compareTo("trg") == 0){
+    startReadADC();
+    // server.println("Success in writing software trig");
+    // sendADCDATA();//this send all valid storage of all previous acquisition
+  }
+  else{
+    Serial.printf("Error: direct command: %s, not recongized\r\n", cmd.c_str());
+  }
+  
+}
 
