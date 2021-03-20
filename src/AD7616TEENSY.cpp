@@ -6,7 +6,8 @@
 #include <SPI.h>
 #include <EEPROMex.h>
 #include <stdio.h>
-#include <NativeEthernet.h>
+// #include <NativeEthernet.h>
+#include <../lib/NativeEthernet/src/NativeEthernet.h>
 
 /******************************************************VARIABLES*************************************************************/
 #undef AD7616DEBUG
@@ -21,6 +22,7 @@ const char PLACEHOLDER = '*';   // placeholder for sending command, if send in (
 const short CMDHEADSIZE = 3;    // size of the command head, ie size of 'xxx' before the separator from (xxx,xxxx)
 const short MAXIN = 600;        // maximum number of chars in input stream
 const short MAXSEQ = MAXIN / 6; // maximum number of sequences
+const short MAXBUF = 2048;      // maximum output buff for TCP socket, break single send if byte exceeds this number
 
 /*global vairbale for sequencer command*/
 unsigned char seqChannelA[MAXSEQ][8];    // measured channel index(0-7) in sequencer for channel A, the size is stored in seqChannelSize
@@ -224,7 +226,7 @@ void dataReady()
     return;
   }
   
-  Serial.println("received a falling edge of BUSY");
+  // Serial.println("received a falling edge of BUSY");
   // Serial.printf("Total time: %u \r\n", static_cast<unsigned long>(timer) );
   short dataA[seqChannelSize[seqCounter][0]];
   short dataB[seqChannelSize[seqCounter][1]];
@@ -284,7 +286,7 @@ void sendADCDATA()
   for (size_t i = 0; i < DATASIZE-1; i++)
   {
     sd.append((char)(ADCDATA[i]>>8));
-    sd.append((char)(ADCDATA[i]));
+    sd.append((char)(ADCDATA[i]&0xff));
     // Serial.printf("%d,",ADCDATA[i]);
     // server.printf("%c%c",(char)(ADCDATA[i]>>8),(char)(ADCDATA[i]));
     // server.printf("%d,",ADCDATA[i]);
@@ -292,14 +294,26 @@ void sendADCDATA()
     // server.write(uint8_t(ADCDATA[i]));
   }
   sd.append((char)(ADCDATA[DATASIZE-1]>>8));
-  sd.append((char)(ADCDATA[DATASIZE-1]));
+  sd.append((char)(ADCDATA[DATASIZE-1]&0xff));
   // sd.append((char)(ADCDATA[DATASIZE-1]));
   // Serial.println(ADCDATA[DATASIZE-1]);
   // server.printf("%c%c",(char)(ADCDATA[DATASIZE-1]>>8),(char)(ADCDATA[DATASIZE-1]));
   // server.printf("%d\0",ADCDATA[DATASIZE-1]);
   // server.write(uint8_t(ADCDATA[DATASIZE-1]>>8));
   // server.write(uint8_t(ADCDATA[DATASIZE-1]));
-  server.write(sd.c_str(),DATASIZE*2);
+  
+  
+  if (DATASIZE*2>MAXBUF){
+    for (unsigned i = 0; i < (DATASIZE*2)/MAXBUF; i++)
+    {
+      server.write(sd.c_str() + i*MAXBUF, MAXBUF);
+    }
+    server.write(sd.c_str() + ((DATASIZE*2)/MAXBUF)*MAXBUF, (DATASIZE*2)%MAXBUF);
+  }
+  else{
+    server.write(sd.c_str(),DATASIZE*2);
+  }
+  
   Serial.println(sd);
   Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
 
