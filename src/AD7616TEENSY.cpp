@@ -60,6 +60,14 @@ const short dummyReadAddr   = 0/*(1<<9)*/; // used for reading conversion result
 
 elapsedMicros timer;
 /****************************************************ETHERNET CONNECTION****************************************************/
+/*This block must be run before Ethernet.begin() to overwrite the default value, using Ethernet.set...;
+  Note also, the 128kB heapstack size and buffer size are tested to be working, other value may cause 
+  internal overflow and crashing, test heapsize and buffsize out after you change the value.
+  These two values are also related to socket number*/
+const unsigned socketNum = 1;                   
+const unsigned socketHeapSize = 128 *1024;      // set heap size for allocating buffer
+const unsigned socketBufferSize = 128 * 1024;   // set buffer size, which determines the maximum input/output size
+
 byte mac[] = {0x04,0xe9,0xe5,0x0e,0x0c,0xe0};
 IPAddress ip(10,10,0,10);
 EthernetServer server(80);
@@ -287,33 +295,12 @@ void sendADCDATA()
   {
     sd.append((char)(ADCDATA[i]>>8));
     sd.append((char)(ADCDATA[i]&0xff));
-    // Serial.printf("%d,",ADCDATA[i]);
-    // server.printf("%c%c",(char)(ADCDATA[i]>>8),(char)(ADCDATA[i]));
-    // server.printf("%d,",ADCDATA[i]);
-    // server.write(uint8_t(ADCDATA[i]>>8));
-    // server.write(uint8_t(ADCDATA[i]));
   }
   sd.append((char)(ADCDATA[DATASIZE-1]>>8));
   sd.append((char)(ADCDATA[DATASIZE-1]&0xff));
-  // sd.append((char)(ADCDATA[DATASIZE-1]));
-  // Serial.println(ADCDATA[DATASIZE-1]);
-  // server.printf("%c%c",(char)(ADCDATA[DATASIZE-1]>>8),(char)(ADCDATA[DATASIZE-1]));
-  // server.printf("%d\0",ADCDATA[DATASIZE-1]);
-  // server.write(uint8_t(ADCDATA[DATASIZE-1]>>8));
-  // server.write(uint8_t(ADCDATA[DATASIZE-1]));
   
-  
-  if (DATASIZE*2>MAXBUF){
-    for (unsigned i = 0; i < (DATASIZE*2)/MAXBUF; i++)
-    {
-      server.write(sd.c_str() + i*MAXBUF, MAXBUF);
-    }
-    server.write(sd.c_str() + ((DATASIZE*2)/MAXBUF)*MAXBUF, (DATASIZE*2)%MAXBUF);
-  }
-  else{
-    server.write(sd.c_str(),DATASIZE*2);
-  }
-  
+  server.write(sd.c_str(),DATASIZE*2);
+
   Serial.println(sd);
   Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
 
@@ -323,6 +310,11 @@ void sendADCDATA()
 
 void initTCP()
 {
+  /*This block must be run before Ethernet.begin() to overwrite the default value*/
+  Ethernet.setSocketNum(socketNum);
+  Ethernet.setStackHeap(socketHeapSize);  // set heap size for allocating buffer
+  Ethernet.setSocketSize(socketBufferSize); // set buffer size, which determines the maximum input/output size
+  
   Ethernet.begin(mac,ip);
   Serial.println("Try to initialize TCP \r\n");
   // Check for Ethernet hardware present
