@@ -1,0 +1,3 @@
+[submodule "lib/NativeEthernet/Ethernet"]
+	path = lib/NativeEthernet/Ethernet
+	url = https://github.com/PaulStoffregen/Ethernet
