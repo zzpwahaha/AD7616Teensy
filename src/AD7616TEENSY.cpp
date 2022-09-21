@@ -6,8 +6,8 @@
 #include <SPI.h>
 #include <EEPROMex.h>
 #include <stdio.h>
-// #include <NativeEthernet.h>
-#include <../lib/NativeEthernet/src/NativeEthernet.h>
+#include <NativeEthernet.h>
+// #include <../lib/NativeEthernet/src/NativeEthernet.h>
 
 /******************************************************VARIABLES*************************************************************/
 #undef AD7616DEBUG
@@ -300,9 +300,11 @@ void sendADCDATA()
   sd.append((char)(ADCDATA[DATASIZE-1]&0xff));
   
   server.write(sd.c_str(),DATASIZE*2);
-
-  Serial.println(sd);
-  Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
+  Serial.printf("TCP: Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
+  timer = 0;
+  Serial.write(sd.c_str(),DATASIZE*2);
+  Serial.print("\r\n");
+  Serial.printf("Serial: Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
 
 }
 
