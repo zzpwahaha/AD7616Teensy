@@ -6,8 +6,8 @@
 #include <SPI.h>
 #include <EEPROMex.h>
 #include <stdio.h>
-// #include <NativeEthernet.h>
-#include <../lib/NativeEthernet/src/NativeEthernet.h>
+#include <NativeEthernet.h>
+// #include <../lib/NativeEthernet/src/NativeEthernet.h>
 
 /******************************************************VARIABLES*************************************************************/
 #undef AD7616DEBUG
