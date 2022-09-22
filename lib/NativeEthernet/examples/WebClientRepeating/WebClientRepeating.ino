@@ -23,7 +23,7 @@
  */
 
 #include <SPI.h>
-#include <NativeEthernet.h>
+#include <Ethernet.h>
 
 // assign a MAC address for the ethernet controller.
 // fill in your address here:
