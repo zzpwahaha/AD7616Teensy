@@ -10,8 +10,16 @@
 // #include <../lib/NativeEthernet/src/NativeEthernet.h>
 
 /******************************************************VARIABLES*************************************************************/
-#undef AD7616DEBUG
+#define AD7616DEBUG
 bool debug = false;
+// note for debuging:
+// For serial port debugging with out AD7616DEBUG, the command does not need to be appended with terminator, the terminator is only needed in TCP mode
+// The command need to be send in hex, which is easier use h-term and convert the ascii part of the command to hex
+// e.g. (rng,\xFD\xFF\xFF\xFF) -> 28 72 6E 67 2C FD FF FF FF 29 
+//      (*\x01\x01,100) -> 28 2A 01 01 2C 31 30 30 29
+//      (trg, ) -> 28 74 72 67 2C 20 29
+// With the above three commands, should be able to read the A0 channel with 2.5V range and 100 repetition
+
 
 /*interpreting input command*/
 const char STARTM = '(';        // start marker for each set of command data
@@ -123,6 +131,7 @@ void loop()
     if (rc.length()==0){
       Serial.println("Error: nothing received");
     }
+    Serial.println("Reading from serial: " + rc);
     interpretCmd(rc);
   }
   else{
@@ -481,6 +490,9 @@ bool debugMode(const String& rc)
       }
       
     }
+    else if (rc.compareTo("serverPrint") == 0){
+      server.println("Serve try to print. Should be able to see in WireShark");
+    }
     else{
       gotcha = false;
       Serial.printf("Command %s is not recongized in debug mode\r\n", rc.c_str());
@@ -612,8 +624,8 @@ void interpretCmd(const String &rc)
     charcnts = endpos;
     // Serial.println(rc[charcnts]);
     if (rc[charcnts++]!=ENDM) {
-      Serial.println("Error: Start terminator \"" + String(ENDM) + "\" is missing");
-      server.println("Error: Start terminator \"" + String(ENDM) + "\" is missing");
+      Serial.println("Error: End terminator \"" + String(ENDM) + "\" is missing");
+      server.println("Error: End terminator \"" + String(ENDM) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
@@ -697,6 +709,7 @@ void handleDirectCmd(String cmd, String content)
       digitalWrite(CS, HIGH); 
     }
     server.println("Success in writing range register");
+    Serial.println("Success in writing range register");
   }
   else if (cmd.compareTo("trg") == 0){
     startReadADC();
