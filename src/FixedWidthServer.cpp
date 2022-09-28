@@ -239,7 +239,23 @@ void loop() {
         state.bufSize = 0;
       }
     }
+
   }
+
+  // IPAddress ip = state.client.remoteIP();
+  // printf("Sending to client: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+  // state.client.writeFully("HTTP/1.1 200 OK\r\n"
+  //                         "Connection: close\r\n"
+  //                         "Content-Type: text/plain\r\n"
+  //                         "\r\n"
+  //                         "Hello, Client!\r\n");
+  // state.client.flush();
+
+  // // Half close the connection, per
+  // // [Tear-down](https://datatracker.ietf.org/doc/html/rfc7230#section-6.6)
+  // state.client.closeOutput();
+  // // state.closedTime = millis();
+  // // state.outputClosed = true;
 
   // Clean up all the closed clients
   size_t size = clients.size();
