@@ -217,28 +217,31 @@ void processClientData(ClientState &state) {
   // Loop over available data until an empty line or no more data
   // Note that if emptyLine starts as false then this will ignore any
   // initial blank line.
-  while (true) {
-    int avail = state.client.available();
-    if (avail <= 0) {
-      return;
-    }
+  // while (true) {
+  //   int avail = state.client.available();
+  //   if (avail <= 0) {
+  //     return;
+  //   }
 
-    state.lastRead = millis();
-    int c = state.client.read();
-    printf("%c", c);
-    if (c == '\n') {
-      if (state.emptyLine) {
-        break;
-      }
+  //   state.lastRead = millis();
+  //   int c = state.client.read();
+  //   printf("%c", c);
+  //   if (c == '\n') {
+  //     if (state.emptyLine) {
+  //       break;
+  //     }
 
-      // Start a new empty line
-      state.emptyLine = true;
-    } else if (c != '\r') {
-      // Ignore carriage returns because CRLF is a likely pattern in
-      // an HTTP request
-      state.emptyLine = false;
-    }
-  }
+  //     // Start a new empty line
+  //     state.emptyLine = true;
+  //   } else if (c != '\r') {
+  //     // Ignore carriage returns because CRLF is a likely pattern in
+  //     // an HTTP request
+  //     state.emptyLine = false;
+  //   }
+  // }
+  uint8_t buf[4096];
+  int actualSize = state.client.read(buf, 4096);
+  Serial.write(buf, actualSize);
 
   IPAddress ip = state.client.remoteIP();
   printf("Sending to client: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);

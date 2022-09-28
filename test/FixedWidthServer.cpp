@@ -30,7 +30,7 @@ constexpr uint32_t kLinkTimeout = 5000;  // 5 seconds
 
 IPAddress staticIP{10, 10, 0, 10};//{192, 168, 1, 101};
 IPAddress subnetMask{255, 255, 255, 0};
-IPAddress gateway{10, 10, 0, 1};
+IPAddress gateway{0, 0, 0, 0};
 IPAddress dnsServer = gateway;
 
 // --------------------------------------------------------------------------

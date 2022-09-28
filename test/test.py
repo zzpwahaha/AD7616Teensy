@@ -11,7 +11,7 @@ sock.connect(server_address)
 
 try:
     # Send data
-    message = b'This is the message.  It will be repeated.'
+    message = b'This is the message.  It will be repeated.\n'
     print(sys.stderr, 'sending "%s"' % message)
     sock.sendall(message)
 
@@ -20,9 +20,9 @@ try:
     amount_expected = len(message)
     
     # while amount_received < amount_expected:
-    #     data = sock.recv(16)
-    #     amount_received += len(data)
-    #     print(sys.stderr, 'received "%s"' % data)
+    data = sock.recv(4095)
+    # amount_received += len(data)
+    print(sys.stderr, 'received "%s"' % data)
 
 finally:
     print(sys.stderr, 'closing socket')
