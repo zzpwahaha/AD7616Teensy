@@ -7,6 +7,7 @@
 #include <EEPROMex.h>
 #include <stdio.h>
 #include <NativeEthernet.h>
+#include <QNEthernet.h>
 // #include <../lib/NativeEthernet/src/NativeEthernet.h>
 
 /******************************************************VARIABLES*************************************************************/
@@ -28,7 +29,7 @@ const char ENDM = ')';          // end marker for each set of command data
 const char TERMINATOR = '#';    // terminator for tcp socket connection, the command data in should end with TERMINATOR + '\0'
 const char PLACEHOLDER = '*';   // placeholder for sending command, if send in (*xx,xxxx), it will go as channel conversion, otherwise (xxx,xxxx) will go as command
 const short CMDHEADSIZE = 3;    // size of the command head, ie size of 'xxx' before the separator from (xxx,xxxx)
-const short MAXIN = 600;        // maximum number of chars in input stream
+const short MAXIN = 128*6;        // maximum number of chars in input stream
 const short MAXSEQ = MAXIN / 6; // maximum number of sequences
 const short MAXBUF = 2048;      // maximum output buff for TCP socket, break single send if byte exceeds this number
 
@@ -320,9 +321,9 @@ void sendADCDATA()
 void initTCP()
 {
   /*This block must be run before Ethernet.begin() to overwrite the default value*/
-  Ethernet.setSocketNum(socketNum);
-  Ethernet.setStackHeap(socketHeapSize);  // set heap size for allocating buffer
-  Ethernet.setSocketSize(socketBufferSize); // set buffer size, which determines the maximum input/output size
+  // Ethernet.setSocketNum(socketNum);
+  // Ethernet.setStackHeap(socketHeapSize);  // set heap size for allocating buffer
+  // Ethernet.setSocketSize(socketBufferSize); // set buffer size, which determines the maximum input/output size
   
   Ethernet.begin(mac,ip);
   Serial.println("Try to initialize TCP \r\n");
@@ -334,11 +335,17 @@ void initTCP()
   if (Ethernet.linkStatus() == LinkOFF) {
     Serial.println("Ethernet cable is not connected.");
     return;
-  }
-  Serial.println("Success start \r\n");
+  }  
   // start listening for clients
   server.begin();
-  
+  Serial.println("Success start \r\n");
+  Serial.println(Ethernet.localIP());
+  server.println("Success start with println");
+  server.write("Success start with write");
+  server.flush();
+  uint8_t buf[] = "Success start with NativeEthernetServer::write";
+  server.write(buf, sizeof(buf)/sizeof(buf[0]));
+  server.flush();
 }
 
 bool listenForEthernetClients(String& rc) 
@@ -492,6 +499,14 @@ bool debugMode(const String& rc)
     }
     else if (rc.compareTo("serverPrint") == 0){
       server.println("Serve try to print. Should be able to see in WireShark");
+      server.write("Serve try to print. Should be able to see in WireShark");
+      server.flush();
+      server.println("Success start with println");
+      server.write("Success start with write");
+      server.flush();
+      uint8_t buf[] = "Success start with NativeEthernetServer::write";
+      server.write(buf, sizeof(buf)/sizeof(buf[0]));
+      server.flush();
     }
     else{
       gotcha = false;
