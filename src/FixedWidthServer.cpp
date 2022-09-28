@@ -163,7 +163,19 @@ void setup() {
       // Ethernet.setDNSServerIP(dnsServer);  // Set first so that the
                                           // listener sees it
       Ethernet.begin(staticIP, subnetMask, gateway);
+      
+      IPAddress ip = Ethernet.localIP();
+      printf("    Local IP    = %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+      ip = Ethernet.subnetMask();
+      printf("    Subnet mask = %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+      ip = Ethernet.gatewayIP();
+      printf("    Gateway     = %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+      ip = Ethernet.dnsServerIP();
+      printf("    DNS         = %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
 
+      // Start the server
+      printf("Listening for clients on port %u...\n", kServerPort);
+      server.begin();
       // When setting a static IP, the address is changed immediately,
       // but the link may not be up; optionally wait for the link here
       if (kLinkTimeout > 0) {
