@@ -24,6 +24,14 @@ try:
     # amount_received += len(data)
     print(sys.stderr, 'received "%s"' % data)
 
+    data = sock.recv(4095)
+    # amount_received += len(data)
+    print(sys.stderr, 'received "%s"' % data)
+
+    data = sock.recv(4095)
+    # amount_received += len(data)
+    print(sys.stderr, 'received "%s"' % data)
+
 finally:
     print(sys.stderr, 'closing socket')
     sock.close()

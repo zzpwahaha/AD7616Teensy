@@ -239,9 +239,15 @@ void processClientData(ClientState &state) {
   //     state.emptyLine = false;
   //   }
   // }
-  uint8_t buf[4096];
+  uint8_t buf[4096] = {0};
   int actualSize = state.client.read(buf, 4096);
+  if (actualSize == 0){
+    return; // only act if there is data in the buff to read
+    // when tcp make connection, there is also client connection that does not transmit
+    // data. Should ignore this case.
+  }
   Serial.write(buf, actualSize);
+  Serial.println(String(reinterpret_cast<char*>(buf)) + String("Again with println"));
 
   IPAddress ip = state.client.remoteIP();
   printf("Sending to client: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
@@ -253,7 +259,10 @@ void processClientData(ClientState &state) {
   //                         "Hello, Client!\r\n");
   state.client.writeFully(buff, 4);
   state.client.flush();
-
+  state.client.println("Sending from println");
+  state.client.flush();
+  state.client.writeFully("asdasd");
+  state.client.flush();
   // Half close the connection, per
   // [Tear-down](https://datatracker.ietf.org/doc/html/rfc7230#section-6.6)
   state.client.closeOutput();
