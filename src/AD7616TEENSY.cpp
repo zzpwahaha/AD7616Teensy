@@ -1,17 +1,25 @@
 /****************************************************************************************
 
  ***************************************************************************************/
-
+// C++ includes
+#include <algorithm>
+#include <cstdio>
+#include <utility>
+#include <vector>
+// Teensy includes
 #include <Arduino.h>
 #include <SPI.h>
 #include <EEPROMex.h>
 #include <stdio.h>
-#include <NativeEthernet.h>
-#include <QNEthernet.h>
+// #include <NativeEthernet.h>
+// #include <QNEthernet.h>
 // #include <../lib/NativeEthernet/src/NativeEthernet.h>
 
+#include <QNEthernet.h>
+using namespace qindesign::network;
+
 /******************************************************VARIABLES*************************************************************/
-#define AD7616DEBUG
+#undef AD7616DEBUG
 bool debug = false;
 // note for debuging:
 // For serial port debugging with out AD7616DEBUG, the command does not need to be appended with terminator, the terminator is only needed in TCP mode
@@ -69,17 +77,49 @@ const short dummyReadAddr   = 0/*(1<<9)*/; // used for reading conversion result
 
 elapsedMicros timer;
 /****************************************************ETHERNET CONNECTION****************************************************/
-/*This block must be run before Ethernet.begin() to overwrite the default value, using Ethernet.set...;
-  Note also, the 128kB heapstack size and buffer size are tested to be working, other value may cause 
-  internal overflow and crashing, test heapsize and buffsize out after you change the value.
-  These two values are also related to socket number*/
-const unsigned socketNum = 1;                   
-const unsigned socketHeapSize = 128 *1024;      // set heap size for allocating buffer
-const unsigned socketBufferSize = 128 * 1024;   // set buffer size, which determines the maximum input/output size
+// byte mac[] = {0x04,0xe9,0xe5,0x0e,0x0c,0xe0};
+// The DHCP timeout, in milliseconds. Set to zero to not wait and instead rely on the listener to inform us of an address assignment.
+// using static ip, so can just ignore DHCP part. Keeping everything for future convenience
+constexpr uint32_t kDHCPTimeout = 10000;  // 10 seconds
+// The link timeout, in milliseconds. Set to zero to not wait and instead rely on the listener to inform us of a link.
+constexpr uint32_t kLinkTimeout = 5000;  // 5 seconds
+// Timeout for waiting for input from the client.
+constexpr uint32_t kClientTimeout = 5000;  // 5 seconds
+// Timeout for waiting for a close from the client after a half close.
+constexpr uint32_t kShutdownTimeout = 30000;  // 30 seconds
 
-byte mac[] = {0x04,0xe9,0xe5,0x0e,0x0c,0xe0};
-IPAddress ip(10,10,0,10);
-EthernetServer server(80);
+// Set the static IP to something other than INADDR_NONE (zero)
+// to not use DHCP. The values here are just examples.
+IPAddress staticIP{10, 10, 0, 10};
+IPAddress subnetMask{255, 255, 255, 0};
+IPAddress gateway{0, 0, 0, 0};
+constexpr uint16_t kServerPort = 80;
+// The server.
+EthernetServer server{kServerPort};
+
+// Keeps track of state for a single client.
+struct ClientState {
+  ClientState(EthernetClient client)
+      : remoteIP{client.remoteIP()},
+        remotePort(client.remotePort()),
+        client(std::move(client)) {}
+
+  // Put these before the moved client
+  IPAddress remoteIP;
+  uint16_t remotePort;
+
+  EthernetClient client;
+  bool closed = false;
+  // For timeouts.
+  uint32_t lastRead = millis();  // Mark creation time
+  // For half closed connections, after "Connection: close" was sent and closeOutput() was called
+  uint32_t closedTime = 0;    // When the output was shut down
+  bool outputClosed = false;  // Whether the output was shut down
+};
+std::vector<ClientState> clients; // more than one client can be connected at one time
+std::vector<String> clientInputs; // incoming commands from all clients, will report error is this vector is ever larger than one
+// ClientState nullClient(EthernetClient());
+ClientState* clientWriter = nullptr; // used to store the connected client and write data to it
 
 
 /******************************************************FUNCTION HEAD********************************************************/
@@ -96,6 +136,7 @@ void dummyReadADC();
 void sendADCDATA();
 
 void initTCP();
+void serverUpdate(bool hasIP) ; // Tell the server there's been an IP address change. IMPORTANT: the server is started in this function
 bool listenForEthernetClients(String& rc);
 
 void resetSeqTEENSY();
@@ -107,6 +148,9 @@ void setup()
 {  
   // Initializing USB serial to 12Mbit/sec. Teensy ignores the 9600 baud rate. see https://www.pjrc.com/teensy/td_serial.html
   Serial.begin(9600);
+  while (!Serial && millis() < 4000) {
+    // Wait for Serial to initialize
+  }
 
   pinMode(RESET, OUTPUT);
   pinMode(CS, OUTPUT);
@@ -175,10 +219,14 @@ void initADC()
 
 void startReadADC()
 {
+  if (clientWriter->client) {
+    Serial.println("Error: The client is disconnected! Can not write data back in startReadADC ???"); // may be can try to init a client with the ip and port
+    // return;
+  }
   Serial.println("Start to read ADC");
   if (seqTotal==0){
     Serial.println("Error: sequence number is zero, no sequence is armed for trigger");
-    server.println("Error: sequence number is zero, no sequence is armed for trigger");
+    clientWriter->client.println("Error: sequence number is zero, no sequence is armed for trigger");
     return;
   }
   timer = 0;
@@ -309,7 +357,7 @@ void sendADCDATA()
   sd.append((char)(ADCDATA[DATASIZE-1]>>8));
   sd.append((char)(ADCDATA[DATASIZE-1]&0xff));
   
-  server.write(sd.c_str(),DATASIZE*2);
+  clientWriter->client.writeFully(sd.c_str(),DATASIZE*2);
 
   Serial.println(sd);
   Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
@@ -320,64 +368,210 @@ void sendADCDATA()
 
 void initTCP()
 {
-  /*This block must be run before Ethernet.begin() to overwrite the default value*/
-  // Ethernet.setSocketNum(socketNum);
-  // Ethernet.setStackHeap(socketHeapSize);  // set heap size for allocating buffer
-  // Ethernet.setSocketSize(socketBufferSize); // set buffer size, which determines the maximum input/output size
-  
-  Ethernet.begin(mac,ip);
-  Serial.println("Try to initialize TCP \r\n");
-  // Check for Ethernet hardware present
-  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
-    Serial.println("Ethernet shield was not found.  Sorry, can't run without hardware. :(");
-    return;
+  stdPrint = &Serial;  // Make printf work (a QNEthernet feature)
+  printf("Starting...\r\n");
+
+  /*Unlike the Arduino API (which you can still use), QNEthernet uses the Teensy's internal MAC address by default, so we can retrieve it here*/
+  uint8_t mac[6];
+  Ethernet.macAddress(mac);  // This is informative; it retrieves, not sets
+  printf("MAC = %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+  /*Add listeners. It's important to add these before doing anything with Ethernet, so no events are missed.*/
+  /*Listen for link changes*/
+  Ethernet.onLinkState([](bool state) {
+    printf("[Ethernet] Link %s\r\n", state ? "ON" : "OFF");
+  });
+  /*Listen for address changes*/
+  Ethernet.onAddressChanged([]() {
+    IPAddress ip = Ethernet.localIP();
+    bool hasIP = (ip != INADDR_NONE);
+    if (hasIP) {
+      printf("[Ethernet] Address changed:\r\n");
+      IPAddress ip = Ethernet.localIP();
+      printf("    Local IP = %u.%u.%u.%u\r\n", ip[0], ip[1], ip[2], ip[3]);
+      ip = Ethernet.subnetMask();
+      printf("    Subnet   = %u.%u.%u.%u\r\n", ip[0], ip[1], ip[2], ip[3]);
+      ip = Ethernet.gatewayIP();
+      printf("    Gateway  = %u.%u.%u.%u\r\n", ip[0], ip[1], ip[2], ip[3]);
+      ip = Ethernet.dnsServerIP();
+      if (ip != INADDR_NONE) {  // May happen with static IP
+        printf("    DNS      = %u.%u.%u.%u\r\n", ip[0], ip[1], ip[2], ip[3]);
+      }
+    } else {
+      printf("[Ethernet] Address changed: No IP address\r\n");
+    }
+    /*Tell interested parties the state of the IP address, for example, servers, SNTP clients, and other sub-programs that need to know whether 
+    to stop/start/restart/etc. Note: When setting a static IP, the address will be set but a link might not yet exist*/
+    serverUpdate(hasIP);
+  });
+
+  // using static ip, so can just ignore DHCP part. Keeping everything for future convenience
+  if (staticIP == INADDR_NONE) {
+    printf("Starting Ethernet with DHCP...\r\n");
+    if (!Ethernet.begin()) {
+      printf("Failed to start Ethernet\r\n");
+      return;
+    }
+    // We can choose not to wait and rely on the listener to tell us when an address has been assigned
+    if (kDHCPTimeout > 0) {
+      if (!Ethernet.waitForLocalIP(kDHCPTimeout)) {
+        printf("Failed to get IP address from DHCP\r\n");
+        // We may still get an address later, after the timeout,
+        // so continue instead of returning
+      }
+    }
+  } else {
+    printf("Starting Ethernet with static IP...\r\n");
+    Ethernet.begin(staticIP, subnetMask, gateway);
+    // When setting a static IP, the address is changed immediately, but the link may not be up; optionally wait for the link here
+    if (kLinkTimeout > 0) {
+      if (!Ethernet.waitForLink(kLinkTimeout)) {
+        printf("Failed to get link\r\n");
+        // We may still see a link later, after the timeout, so continue instead of returning
+      }
+    }
   }
-  if (Ethernet.linkStatus() == LinkOFF) {
-    Serial.println("Ethernet cable is not connected.");
-    return;
-  }  
-  // start listening for clients
-  server.begin();
-  Serial.println("Success start \r\n");
-  Serial.println(Ethernet.localIP());
-  server.println("Success start with println");
-  server.write("Success start with write");
-  server.flush();
-  uint8_t buf[] = "Success start with NativeEthernetServer::write";
-  server.write(buf, sizeof(buf)/sizeof(buf[0]));
-  server.flush();
+
+}
+
+void serverUpdate(bool hasIP) {
+  // If there's no IP address, could optionally stop the server, depending on your needs
+  if (hasIP) {
+    if (server) {
+      // Optional
+      printf("Address changed: Server already started\r\n");
+    } else {
+      printf("Starting server on port %u...", kServerPort);
+      fflush(stdout); // Print what we have so far if line buffered
+      server.begin(); // SERVER STARTED HERE, IMPORTANT!!!
+      printf("%s\r\n", server ? "done." : "FAILED!");
+    }
+  } else {
+    // Stop the server if there's no IP address
+    if (!server) {
+      // Optional
+      printf("Address changed: Server already stopped\r\n");
+    } else {
+      printf("Stopping server...");
+      fflush(stdout);  // Print what we have so far if line buffered
+      printf("%s\r\n", server.end() ? "done." : "FAILED!");
+    }
+  }
 }
 
 bool listenForEthernetClients(String& rc) 
 {
-  // listen for incoming clients
-  EthernetClient client = server.available();
-  // Serial.println("Looking for client");
+  bool success = false;
+  clientInputs.clear();
+  EthernetClient client = server.accept();
   if (client) {
-    Serial.println("Got a client");
-    char buff[MAXIN];
-    if (client.available() > 0) {
-      size_t size = client.readBytesUntil('\0',buff,MAXIN);
-      if (buff[size-1] != TERMINATOR){
-        Serial.println(buff);
-        Serial.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", size, buff[size-1],TERMINATOR);
-        server.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", size, buff[size-1],TERMINATOR);
-        return false;
+    // We got a connection!
+    IPAddress ip = client.remoteIP();
+    uint16_t port = client.remotePort();
+    printf("Client connected: IP %u.%u.%u.%u, port %d\r\n", ip[0], ip[1], ip[2], ip[3], port);
+    clients.emplace_back(client); // maybe do not need to use std::move(client) here since it is moved in the constructor
+    printf("Client count: %u\r\n", clients.size());
+  }
+
+  // Process data from each client
+  for (ClientState &state : clients) {  // Use a reference so we don't copy
+    if (!state.client.connected()) {
+      state.closed = true;
+      continue;
+    }
+    // Check if we need to force close the client
+    if (state.outputClosed) {
+      if (millis() - state.closedTime >= kShutdownTimeout) {
+        IPAddress ip = state.client.remoteIP();
+        printf("Client shutdown timeout: %u.%u.%u.%u\n",
+                ip[0], ip[1], ip[2], ip[3]);
+        state.client.stop();
+        state.closed = true;
+        continue;
       }
-      if (server.available()){
-        Serial.println(buff);
-        Serial.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
-        server.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
-        return false;
+    } else {
+      if (millis() - state.lastRead >= kClientTimeout) {
+        IPAddress ip = state.client.remoteIP();
+        printf("Client timeout: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+        state.client.stop();
+        state.closed = true;
+        continue;
       }
-      buff[size-1] = 0; // remove TERMINATOR by changing the TERMINATOR to null 
-      rc = String(buff);
-      // Serial.println("Command from TCP socket " + rc + " of size: " + String(size));
-      return true;
-      // note null(0) in String will make string be chopped at that point, can only put it in char[] 
+    }
+
+    // try to read data from client
+    uint8_t buff[MAXIN];
+    int actualSize = state.client.read(buff, MAXIN);
+    // try to format the data if there is any
+    if (actualSize>0) { 
+      if (buff[actualSize-1] != TERMINATOR){
+        printf("Recived from TCP: %s\r\n", reinterpret_cast<char*>(buff));
+        printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", actualSize, buff[actualSize-1],TERMINATOR);
+        state.client.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", actualSize, buff[actualSize-1],TERMINATOR);
+        success = false;
+      }
+      else if (server.available()){
+        printf("Recived from TCP: %s\r\n", reinterpret_cast<char*>(buff));
+        printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
+        state.client.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
+        success = false;
+      }
+      else{
+        buff[actualSize-1] = 0; // remove TERMINATOR by changing the TERMINATOR to null 
+        clientInputs.push_back(String(reinterpret_cast<char*>(buff)));
+        rc = clientInputs.back();
+        clientWriter = &state;
+        Serial.println("************************************************************************");
+        Serial.println("Command from TCP socket " + clientInputs.back() + " of size: " + String(actualSize));
+        success = true;
+
+        state.client.printf("Test client printf");
+        char s[] = "taqefergrh";
+        server.write(reinterpret_cast<uint8_t*>(s), strlen(s));
+        state.client.printf("Test client printf %s", state.client.availableForWrite()? "Avaliable for wirte" : "Not aval for write");
+        state.client.printf("Test client printf %s", state.client.connected()? "connected" : "Not connected");
+        state.client.write("Test client write");
+        state.client.writeFully("Test client writeFully");
+        // state.client.flush();
+        Serial.println("Test client printf");
+
+      }
     }
   }
-  return false;
+  // check if there is only one input command, report error otherwise
+  if (clientInputs.size()>1) {
+    printf("Error in connected client: the client size %d is larger than 1, which is fine. But the program can only accept one client command at a time for the data income, instead of %d. Maybe try to give sometime in sending two commands. \r\n", 
+      clients.size(), clientInputs.size());
+    printf("The commands are: \r\n");
+    for (auto &s : clientInputs) {
+      printf("%s\r\n", s.c_str());
+    }
+    for (ClientState &state : clients) {  // Use a reference so we don't copy
+      if (!state.client.connected()) {
+        state.closed = true;
+        continue;
+      }
+      state.client.printf("Error in connected client: the client size %d is larger than 1, which is fine. But the program can only accept one client command at a time for the data income, instead of %d. Maybe try to give sometime in sending two commands \r\n", 
+      clients.size(), clientInputs.size());
+      state.client.printf("The commands are: \r\n");
+      for (auto &s : clientInputs) {
+        state.client.printf("%s\r\n", s.c_str());
+      }
+    }
+    success = false;
+  }
+
+  // Clean up all the closed clients
+  size_t size = clients.size();
+  clients.erase(std::remove_if(clients.begin(), clients.end(),
+                               [](const auto &state) { return state.closed; }),
+                clients.end());
+  if (clients.size() != size) {
+    printf("New client count: %u\r\n", clients.size());
+  }
+
+  return success;
 }
 
 
@@ -499,9 +693,9 @@ bool debugMode(const String& rc)
     }
     else if (rc.compareTo("serverPrint") == 0){
       server.println("Serve try to print. Should be able to see in WireShark");
-      server.write("Serve try to print. Should be able to see in WireShark");
       server.flush();
-      server.println("Success start with println");
+      server.printf("Serve try to print. Should be able to see in WireShark");
+      server.flush();
       server.write("Success start with write");
       server.flush();
       uint8_t buf[] = "Success start with NativeEthernetServer::write";
@@ -604,7 +798,10 @@ void interpretCmd(const String &rc)
     return;
   }
   #endif
-
+  if (clientWriter->client) {
+    Serial.println("Error: The client is disconnected! Can not write data back?"); // may be can try to init a client with the ip and port
+    // return;
+  }
 
   bool firstSeq = true;
   unsigned short charcnts = 0;
@@ -615,14 +812,14 @@ void interpretCmd(const String &rc)
   {
     if (rc[charcnts++]!=STARTM) {
       Serial.println("Error: Start terminator \"" + String(STARTM) + "\" is missing");
-      server.println("Error: Start terminator \"" + String(STARTM) + "\" is missing");
+      clientWriter->client.println("Error: Start terminator \"" + String(STARTM) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
     rc.getBytes(chnl, CMDHEADSIZE+1, charcnts); // the last character is always '\0' by String::getBytes
     if (chnl[0]==0 || chnl[1]==0){
       Serial.println("Error: Encounter zero in channel selection");
-      server.println("Error: Encounter zero in channel selection");
+      clientWriter->client.println("Error: Encounter zero in channel selection");
       resetSeqTEENSY();
       return;
     }
@@ -630,7 +827,7 @@ void interpretCmd(const String &rc)
     charcnts+=CMDHEADSIZE;
     if (rc[charcnts++]!=SEPAR) {
       Serial.println("Error: Separator \"" + String(SEPAR) + "\" is missing");
-      server.println("Error: Separator \"" + String(SEPAR) + "\" is missing");
+      clientWriter->client.println("Error: Separator \"" + String(SEPAR) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
@@ -640,7 +837,7 @@ void interpretCmd(const String &rc)
     // Serial.println(rc[charcnts]);
     if (rc[charcnts++]!=ENDM) {
       Serial.println("Error: End terminator \"" + String(ENDM) + "\" is missing");
-      server.println("Error: End terminator \"" + String(ENDM) + "\" is missing");
+      clientWriter->client.println("Error: End terminator \"" + String(ENDM) + "\" is missing");
       resetSeqTEENSY();
       return;
     }
@@ -712,7 +909,7 @@ void handleDirectCmd(String cmd, String content)
     Serial.printf("Direct command, write range register with 0x%02X 0x%02X 0x%02X 0x%02X to A1A2,B1B2\r\n", content[0],content[1],content[2],content[3]);
     if (content.length() != 4){
       Serial.printf("Error: write range register with 0x%02X 0x%02X 0x%02X 0x%02X is invalid\r\n", content[0],content[1],content[2],content[3]);
-      server.printf("Error: write range register with 0x%02X 0x%02X 0x%02X 0x%02X is invalid\r\n", content[0],content[1],content[2],content[3]);
+      clientWriter->client.printf("Error: write range register with 0x%02X 0x%02X 0x%02X 0x%02X is invalid\r\n", content[0],content[1],content[2],content[3]);
     }
     byte buff[4+1];
     content.getBytes(buff,4+1);
@@ -723,7 +920,7 @@ void handleDirectCmd(String cmd, String content)
       SPI.transfer16((1<<15)+(rangeRegAddr[i]<<8) + buff[i/*2*(i/2)+1-(i%2)*/]); 
       digitalWrite(CS, HIGH); 
     }
-    server.println("Success in writing range register");
+    clientWriter->client.println("Success in writing range register");
     Serial.println("Success in writing range register");
   }
   else if (cmd.compareTo("trg") == 0){
