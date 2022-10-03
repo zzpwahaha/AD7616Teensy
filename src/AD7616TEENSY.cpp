@@ -53,7 +53,7 @@ bool seqRunning = false;
 bool dummyRead = false;
 
 /*external 8M memory storage*/
-EXTMEM short ADCDATA[4000000];
+EXTMEM short ADCDATA[1<<22 /*2^22*/];
 unsigned int DATASIZE = 0; 
 
 /*Teensy pin configuration*/
@@ -220,7 +220,9 @@ void initADC()
 void startReadADC()
 {
   if (clientWriter->client) {
-    Serial.println("Error: The client is disconnected! Can not write data back in startReadADC ???"); // may be can try to init a client with the ip and port
+    Serial.printf("startReadADC: The client is %s and is %s\r\n", 
+    clientWriter->client.connected() ? "Connected" : "Disconnected",
+    clientWriter->client.availableForWrite() ? "Available for write" : "Not available for write"); 
     // return;
   }
   Serial.println("Start to read ADC");
@@ -359,7 +361,7 @@ void sendADCDATA()
   
   clientWriter->client.writeFully(sd.c_str(),DATASIZE*2);
 
-  Serial.println(sd);
+  // Serial.println(sd);
   Serial.printf("Total send time is %d us and %.2f us per 2 byte data \r\n", (unsigned long)timer, double(timer)/DATASIZE);
 
 }
@@ -506,13 +508,13 @@ bool listenForEthernetClients(String& rc)
     // try to format the data if there is any
     if (actualSize>0) { 
       if (buff[actualSize-1] != TERMINATOR){
-        printf("Recived from TCP: %s\r\n", reinterpret_cast<char*>(buff));
+        printf("Received from TCP: %s\r\n", reinterpret_cast<char*>(buff));
         printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", actualSize, buff[actualSize-1],TERMINATOR);
         state.client.printf("Error in reading TCP command: size=%d, end character is %c, but should be %c\r\n", actualSize, buff[actualSize-1],TERMINATOR);
         success = false;
       }
       else if (server.available()){
-        printf("Recived from TCP: %s\r\n", reinterpret_cast<char*>(buff));
+        printf("Received from TCP: %s\r\n", reinterpret_cast<char*>(buff));
         printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
         state.client.printf("Error in reading TCP command: Command is exceeding max size: %d, or command is sent in too fast\r\n", MAXIN);
         success = false;
@@ -526,16 +528,9 @@ bool listenForEthernetClients(String& rc)
         Serial.println("Command from TCP socket " + clientInputs.back() + " of size: " + String(actualSize));
         success = true;
 
-        state.client.printf("Test client printf");
-        char s[] = "taqefergrh";
-        server.write(reinterpret_cast<uint8_t*>(s), strlen(s));
-        state.client.printf("Test client printf %s", state.client.availableForWrite()? "Avaliable for wirte" : "Not aval for write");
-        state.client.printf("Test client printf %s", state.client.connected()? "connected" : "Not connected");
-        state.client.write("Test client write");
-        state.client.writeFully("Test client writeFully");
-        // state.client.flush();
-        Serial.println("Test client printf");
-
+        // char s[] = "Server write test";  // server.write does not work
+        // server.write(reinterpret_cast<uint8_t*>(s), strlen(s));
+        // should use state.client.printf, state.client.write, state.client.writeFully, state.client.println, etc
       }
     }
   }
@@ -692,6 +687,8 @@ bool debugMode(const String& rc)
       
     }
     else if (rc.compareTo("serverPrint") == 0){
+      // The server print would not show anything, since there is not client connect to it and it therefore does not know who to send to 
+      // even if there is client connected to it, shoul use client.write to transfer data to client
       server.println("Serve try to print. Should be able to see in WireShark");
       server.flush();
       server.printf("Serve try to print. Should be able to see in WireShark");
@@ -799,7 +796,9 @@ void interpretCmd(const String &rc)
   }
   #endif
   if (clientWriter->client) {
-    Serial.println("Error: The client is disconnected! Can not write data back?"); // may be can try to init a client with the ip and port
+    Serial.printf("interpretCmd: The client is %s and is %s\r\n", 
+      clientWriter->client.connected() ? "Connected" : "Disconnected",
+      clientWriter->client.availableForWrite() ? "Available for write" : "Not available for write"); 
     // return;
   }
 
